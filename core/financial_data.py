@@ -1,0 +1,1089 @@
+import datetime
+import pandas as pd
+import numpy as np
+from typing import Dict, List, Optional, Any, Callable
+import logging
+import threading
+
+
+class FinancialDataCache:
+    """财务数据缓存 - 按需加载（Lazy Loading）
+
+    不再预加载所有财务数据，而是在首次访问某只股票的某个表时才从磁盘缓存读取。
+    如果磁盘缓存也没有，则通过 data_processor 从 API 下载并缓存到磁盘。
+
+    数据结构:
+        _data: {
+            stock1: {
+                table1: pd.DataFrame (index=日期, columns=字段),
+                table2: pd.DataFrame,
+            },
+            ...
+        }
+        _loaded_tables: { (stock, table): True }  已从磁盘/网络加载的标记
+    """
+
+    def __init__(self, financial_data: Dict[str, Any] = None,
+                 data_processor=None,
+                 report_type: str = 'announce_time',
+                 start_time: str = '', end_time: str = ''):
+        self._data: Dict[str, Dict[str, pd.DataFrame]] = {}
+        self._loaded_tables: Dict[tuple, bool] = {}
+        self._data_processor = data_processor
+        self._report_type = report_type
+        self._start_time = start_time
+        self._end_time = end_time
+        self._effective_filter_start = None
+        self._effective_filter_end = None
+        self._loaded = False
+        self._lock = threading.Lock()
+        self._stock_locks: Dict[str, threading.Lock] = {}
+        self._stock_locks_lock = threading.Lock()
+        self._download_failed: set = set()
+        self.logger = logging.getLogger(self.__class__.__module__ + '.' + self.__class__.__name__)
+
+        # 预加载的数据直接注入（兼容旧调用方式）
+        if financial_data:
+            self.load(financial_data)
+
+    def load(self, financial_data: Dict[str, Any]) -> None:
+        """加载财务数据（兼容旧接口，直接注入已加载的数据）
+
+        Args:
+            financial_data: xtdata.get_financial_data 返回的原始数据
+                格式: { stock1: { table1: DataFrame, ... }, ... }
+        """
+        for stock_code, tables in financial_data.items():
+            if stock_code not in self._data:
+                self._data[stock_code] = {}
+
+            if not isinstance(tables, dict):
+                continue
+
+            for table_name, df in tables.items():
+                if df is None:
+                    continue
+                if isinstance(df, pd.DataFrame):
+                    df = self._ensure_datetime_index(df, stock_code, table_name)
+                    if not df.empty:
+                        sorted_df = df.sort_index()
+                        self._data[stock_code][table_name] = sorted_df
+                    else:
+                        self._data[stock_code][table_name] = df
+                    self._loaded_tables[(stock_code, table_name)] = True
+                else:
+                    try:
+                        converted = pd.DataFrame(df)
+                        converted = self._ensure_datetime_index(converted, stock_code, table_name)
+                        if not converted.empty:
+                            converted = converted.sort_index()
+                        self._data[stock_code][table_name] = converted
+                        self._loaded_tables[(stock_code, table_name)] = True
+                    except Exception:
+                        continue
+
+        self._loaded = True
+        stock_count = len(self._data)
+        self.logger.info(f"财务数据缓存加载完成: {stock_count} 只股票")
+
+    def _get_stock_lock(self, stock_code: str) -> threading.Lock:
+        with self._stock_locks_lock:
+            if stock_code not in self._stock_locks:
+                self._stock_locks[stock_code] = threading.Lock()
+            return self._stock_locks[stock_code]
+
+    def _ensure_table_loaded(self, stock_code: str, table_name: str,
+                             start_time: str = '', end_time: str = '') -> None:
+        """确保指定股票的指定表已加载到内存
+
+        V2 按需加载策略：
+        1. 如果已在内存中，直接返回
+        2. 尝试从按年份分片的新缓存读取
+        3. 尝试从旧格式缓存读取（向后兼容）
+        4. 如果磁盘也没有，通过 data_processor 从 API 下载并缓存到磁盘
+
+        Args:
+            stock_code: 股票代码
+            table_name: 报表名称
+            start_time: 加载起始时间（空则使用默认 self._start_time）
+            end_time: 加载结束时间（空则使用默认 self._end_time）
+        """
+        if (stock_code, table_name) in self._loaded_tables:
+            return
+
+        stock_lock = self._get_stock_lock(stock_code)
+        with stock_lock:
+            if (stock_code, table_name) in self._loaded_tables:
+                return
+
+            self._ensure_table_loaded_inner(stock_code, table_name, start_time, end_time)
+
+    def _ensure_table_loaded_inner(self, stock_code: str, table_name: str,
+                                    start_time: str, end_time: str) -> None:
+        """_ensure_table_loaded 的内部实现，调用方已持有 self._lock"""
+
+        # 新增：检查退市状态，永久跳过
+        from core.cache import cache_manager
+        if cache_manager.index_manager.is_delisted(stock_code):
+            self.logger.debug(f"跳过退市股票: {stock_code}.{table_name}")
+            if stock_code not in self._data:
+                self._data[stock_code] = {}
+            self._loaded_tables[(stock_code, table_name)] = True
+            return
+
+        effective_start_time = start_time if start_time else self._start_time
+        effective_end_time = end_time if end_time else self._end_time
+
+        if self._start_time and len(self._start_time) >= 10:
+            try:
+                start_dt = pd.to_datetime(self._start_time[:10])
+                self._effective_filter_start = start_dt - pd.DateOffset(years=1)
+            except Exception:
+                self._effective_filter_start = None
+        else:
+            self._effective_filter_start = None
+
+        if effective_end_time and len(effective_end_time) >= 10:
+            try:
+                self._effective_filter_end = pd.to_datetime(effective_end_time[:10])
+            except Exception:
+                self._effective_filter_end = None
+        else:
+            self._effective_filter_end = None
+
+        if self._data_processor is not None:
+            namespace = f"{self._data_processor.__class__.__name__}_Financial"
+        else:
+            namespace = 'QMTDataProcessor_Financial'
+
+        table_suffix = f"{table_name}_{self._report_type}"
+
+        available_years = cache_manager.index_manager.get_available_financial_years(stock_code, table_suffix)
+        if not available_years:
+            available_years = cache_manager.disk_cache.list_yearly_files(namespace, stock_code, table_suffix)
+
+        if available_years and self._effective_filter_start is not None:
+            needed_start_year = self._effective_filter_start.year
+            needed_end_year = (self._effective_filter_end.year + 1) if self._effective_filter_end else 9999
+            filtered_years = [y for y in available_years if needed_start_year <= y <= needed_end_year]
+            if filtered_years:
+                available_years = filtered_years
+
+        if available_years:
+            df = cache_manager.disk_cache.get_yearly_range(namespace, stock_code, sorted(available_years), table_suffix)
+            if df is not None and isinstance(df, pd.DataFrame) and not df.empty:
+                if stock_code not in self._data:
+                    self._data[stock_code] = {}
+                df = self._ensure_datetime_index(df, stock_code, table_name)
+                if not df.empty:
+                    df = df.sort_index()
+                    if self._effective_filter_start is not None and isinstance(df.index, pd.DatetimeIndex):
+                        df = df[df.index >= self._effective_filter_start]
+                self._data[stock_code][table_name] = df
+                self._loaded_tables[(stock_code, table_name)] = True
+                self.logger.debug(f"从年份缓存加载: {stock_code}.{table_name} (年份: {available_years})")
+                return
+
+        time_suffix = f"_{self._start_time}_{self._end_time}" if self._start_time or self._end_time else ""
+        cache_key = f"{stock_code}{time_suffix}_{table_name}_{self._report_type}"
+
+        cached = cache_manager.disk_cache.get(namespace, cache_key, 'parquet')
+        if cached is not None and isinstance(cached, pd.DataFrame) and not cached.empty:
+            if stock_code not in self._data:
+                self._data[stock_code] = {}
+            cached = self._ensure_datetime_index(cached, stock_code, table_name)
+            if not cached.empty:
+                cached = cached.sort_index()
+            self._data[stock_code][table_name] = cached
+            self._loaded_tables[(stock_code, table_name)] = True
+
+            if isinstance(cached.index, pd.DatetimeIndex) and not cached.empty:
+                written = cache_manager.disk_cache.put_yearly_from_df(namespace, stock_code, table_suffix, cached)
+                for y in written:
+                    cache_manager.index_manager.update_financial_index(stock_code, table_suffix, y)
+                cache_manager.index_manager.save_index()
+
+            self.logger.debug(f"从旧格式缓存加载并迁移: {stock_code}.{table_name}")
+            return
+
+        cached_pkl = cache_manager.disk_cache.get(namespace, cache_key, 'pkl')
+        if cached_pkl is not None and isinstance(cached_pkl, pd.DataFrame) and not cached_pkl.empty:
+            if stock_code not in self._data:
+                self._data[stock_code] = {}
+            cached_pkl = self._ensure_datetime_index(cached_pkl, stock_code, table_name)
+            if not cached_pkl.empty:
+                cached_pkl = cached_pkl.sort_index()
+            self._data[stock_code][table_name] = cached_pkl
+            self._loaded_tables[(stock_code, table_name)] = True
+
+            if isinstance(cached_pkl.index, pd.DatetimeIndex) and not cached_pkl.empty:
+                written = cache_manager.disk_cache.put_yearly_from_df(namespace, stock_code, table_suffix, cached_pkl)
+                for y in written:
+                    cache_manager.index_manager.update_financial_index(stock_code, table_suffix, y)
+                cache_manager.index_manager.save_index()
+
+            cache_manager.disk_cache.delete(namespace, cache_key, 'pkl')
+            self.logger.info(f"旧pkl缓存已迁移为parquet: {stock_code}.{table_name}")
+            return
+
+        if cache_manager.index_manager.is_financial_nodata(stock_code, f"{table_name}_{self._report_type}"):
+            self._loaded_tables[(stock_code, table_name)] = False
+            if stock_code not in self._data:
+                self._data[stock_code] = {}
+            return
+
+        if (stock_code, table_name) in self._download_failed:
+            self._loaded_tables[(stock_code, table_name)] = False
+            if stock_code not in self._data:
+                self._data[stock_code] = {}
+            return
+
+        if self._data_processor is not None:
+            try:
+                self.logger.info(f"请求数据: {stock_code}.{table_name}")
+                self.logger.debug(f"[加载参数] start_time={effective_start_time}, end_time={effective_end_time}")
+                data = self._data_processor.get_financial_data(
+                    [stock_code], [table_name],
+                    start_time=effective_start_time, end_time=effective_end_time,
+                    report_type=self._report_type,
+                )
+                self.logger.debug(f"[加载结果] data_processor返回: {type(data)}, 是否为空: {not data}")
+                if data and stock_code in data and table_name in data[stock_code]:
+                    df = data[stock_code][table_name]
+                    is_empty = df.empty if isinstance(df, pd.DataFrame) else (not df if df is not None else True)
+                    self.logger.debug(f"[加载结果] {stock_code}.{table_name} df类型: {type(df)}, 是否为空: {is_empty}")
+
+                    if isinstance(df, pd.DataFrame):
+                        if not df.empty:
+                            df = self._ensure_datetime_index(df, stock_code, table_name)
+                            if not df.empty:
+                                df = df.sort_index()
+
+                            if isinstance(df.index, pd.DatetimeIndex) and not df.empty:
+                                written = cache_manager.disk_cache.put_yearly_from_df(namespace, stock_code, table_suffix, df)
+                                for y in written:
+                                    cache_manager.index_manager.update_financial_index(stock_code, table_suffix, y)
+                                cache_manager.index_manager.save_index()
+                            else:
+                                time_suffix = f"_{self._start_time}_{self._end_time}" if self._start_time or self._end_time else ""
+                                cache_key = f"{stock_code}{time_suffix}_{table_name}_{self._report_type}"
+                                cache_manager.disk_cache.put(namespace, cache_key, df, 'parquet')
+
+                            if self._effective_filter_start or self._effective_filter_end:
+                                original_len = len(df)
+                                df = self._filter_by_time_range(df)
+                                if len(df) < original_len:
+                                    self.logger.debug(
+                                        f"时间范围过滤: {stock_code}.{table_name} "
+                                        f"{original_len} 条 -> {len(df)} 条 "
+                                        f"({self._effective_filter_start} ~ {self._effective_filter_end})"
+                                    )
+
+                            if stock_code not in self._data:
+                                self._data[stock_code] = {}
+                            self._data[stock_code][table_name] = df
+                            self._loaded_tables[(stock_code, table_name)] = True
+                            self.logger.debug(f"从API下载并缓存: {stock_code}.{table_name}")
+                            return
+                        else:
+                            self.logger.debug(f"[加载结果] {stock_code}.{table_name} df为空，可能是新股或暂无财务数据")
+                            if stock_code not in self._data:
+                                self._data[stock_code] = {}
+                            self._data[stock_code][table_name] = df
+                            self._loaded_tables[(stock_code, table_name)] = True
+                            try:
+                                from core.cache import cache_manager as _cm
+                                _cm.index_manager.mark_financial_nodata(stock_code, f"{table_name}_{self._report_type}")
+                                _cm.index_manager.save_index()
+                            except Exception:
+                                pass
+                            return
+                    else:
+                        self.logger.debug(f"[加载结果] {stock_code}.{table_name} 不是DataFrame")
+                else:
+                    self.logger.debug(f"[加载结果] {stock_code}.{table_name} 数据不存在于返回结果中，data={data}")
+                    try:
+                        from core.cache import cache_manager as _cm
+                        _cm.index_manager.mark_financial_nodata(stock_code, f"{table_name}_{self._report_type}")
+                        _cm.index_manager.save_index()
+                    except Exception:
+                        pass
+            except Exception as e:
+                self.logger.warning(f"按需下载失败: {stock_code}.{table_name}: {e}")
+                self._download_failed.add((stock_code, table_name))
+
+        # 检查是否成功加载了数据
+        if stock_code in self._data and table_name in self._data[stock_code]:
+            self._loaded_tables[(stock_code, table_name)] = True
+            self.logger.debug(f"成功加载数据: {stock_code}.{table_name}")
+        else:
+            self._loaded_tables[(stock_code, table_name)] = False
+            self.logger.debug(f"数据加载失败，标记为失败: {stock_code}.{table_name}")
+            if stock_code not in self._data:
+                self._data[stock_code] = {}
+            if self._data_processor is not None:
+                self._download_failed.add((stock_code, table_name))
+
+    def _ensure_datetime_index(self, df: pd.DataFrame,
+                                stock_code: str = '', table_name: str = '') -> pd.DataFrame:
+        """确保 DataFrame 的索引是 DatetimeIndex
+
+        如果索引不是 DatetimeIndex，尝试从已知的日期列中构建。
+        这对从 parquet 缓存加载的旧格式数据尤其重要。
+        """
+        if isinstance(df.index, pd.DatetimeIndex):
+            return df
+
+        # 尝试从常见日期列构建 DatetimeIndex
+        # 优先使用公告日期列（避免未来数据），其次使用报告期列
+        for col in ['announce_date', 'm_anntime', 'pubDate', '公告日期', '最新公告日期',
+                     'report_date', 'm_timetag', 'statDate', '报告期', 'index']:
+            if col in df.columns:
+                try:
+                    dt_values = pd.to_datetime(df[col], errors='coerce')
+                    valid = dt_values.notna()
+                    if valid.any():
+                        df = df[valid].copy()
+                        df.index = dt_values[valid]
+                        if col == 'index':
+                            df = df.drop(columns=['index'], errors='ignore')
+                        return df
+                except Exception:
+                    continue
+
+        # 尝试将整数索引转为日期（如 20231231 格式）
+        if len(df) > 0 and df.index.dtype in ('int64', 'object'):
+            try:
+                dt_values = pd.to_datetime(df.index.astype(str), format='%Y%m%d', errors='coerce')
+                if dt_values.notna().any():
+                    valid = dt_values.notna()
+                    df = df[valid].copy()
+                    df.index = dt_values[valid]
+                    return df
+            except Exception:
+                pass
+
+        # 所有尝试失败，记录警告
+        if stock_code and table_name:
+            self.logger.debug(
+                f'[_ensure_datetime_index] {stock_code}.{table_name} '
+                f'无法构建DatetimeIndex, index类型={type(df.index).__name__}'
+            )
+
+        return df
+
+    def _filter_by_time_range(self, df: pd.DataFrame) -> pd.DataFrame:
+        """根据预设的时间范围过滤 DataFrame
+
+        在预加载时（preload_stocks），会设置 _effective_filter_start 和 _effective_filter_end。
+        该方法用于在数据加载到内存后，过滤掉超出时间范围的数据，
+        避免回测早期加载到过老的历史数据。
+
+        Returns:
+            过滤后的 DataFrame
+        """
+        if df is None or df.empty:
+            return df
+
+        if not isinstance(df.index, pd.DatetimeIndex):
+            return df
+
+        try:
+            mask_start = True
+            mask_end = True
+
+            if self._effective_filter_start is not None:
+                mask_start = df.index >= self._effective_filter_start
+
+            if self._effective_filter_end is not None:
+                mask_end = df.index <= self._effective_filter_end
+
+            mask = mask_start & mask_end
+            filtered = df.loc[mask]
+
+            return filtered
+        except Exception:
+            return df
+
+    def get_stocks(self) -> List[str]:
+        """获取已缓存的股票列表"""
+        return list(self._data.keys())
+
+    def get_tables(self, stock_code: str) -> List[str]:
+        """获取指定股票已缓存的报表列表"""
+        stock_data = self._data.get(stock_code, {})
+        return list(stock_data.keys())
+
+    def get_latest(self, stock_code: str, table_name: str,
+                   date: datetime.date, field: Optional[str] = None) -> Any:
+        """获取指定日期前已披露的最新财报数据
+
+        关键：只返回 date 之前已披露的数据，避免未来数据（look-ahead bias）。
+        如果数据尚未加载，会按需从磁盘缓存或API获取。
+
+        Args:
+            stock_code: 股票代码
+            table_name: 报表名称，如 'Balance', 'Income'
+            date: 查询日期，只返回此日期之前已披露的数据
+            field: 字段名，为空则返回整行
+
+        Returns:
+            字段值或整行Series，无数据返回None
+        """
+        self._ensure_table_loaded(stock_code, table_name)
+
+        stock_data = self._data.get(stock_code, {})
+        table_df = stock_data.get(table_name)
+
+        if table_df is None or table_df.empty:
+            return None
+
+        if not isinstance(table_df.index, pd.DatetimeIndex):
+            try:
+                table_df.index = pd.to_datetime(table_df.index)
+                self._data[stock_code][table_name] = table_df
+            except Exception as e:
+                self.logger.debug(
+                    f'[get_latest] {stock_code}.{table_name} 索引转DatetimeIndex失败: {e}, '
+                    f'index类型={type(table_df.index).__name__}, '
+                    f'前3个值={table_df.index[:3].tolist() if len(table_df) > 0 else "empty"}'
+                )
+                return None
+
+        pos = table_df.index.searchsorted(pd.Timestamp(date)) - 1
+        if pos < 0:
+            return None
+
+        if field:
+            if field in table_df.columns:
+                val = table_df.iat[pos, table_df.columns.get_loc(field)]
+                if pd.isna(val):
+                    return None
+                return val
+            return None
+
+        return table_df.iloc[pos]
+
+    def get_latest_multi_fields(self, stock_code: str, table_name: str,
+                                date: datetime.date, fields: List[str]) -> Dict[str, Any]:
+        """获取指定日期前已披露的最新财报的多个字段
+
+        Args:
+            stock_code: 股票代码
+            table_name: 报表名称
+            date: 查询日期
+            fields: 字段名列表
+
+        Returns:
+            { field1: value1, field2: value2, ... }
+        """
+        self._ensure_table_loaded(stock_code, table_name)
+
+        result = {}
+        stock_data = self._data.get(stock_code, {})
+        table_df = stock_data.get(table_name)
+
+        if table_df is None or table_df.empty:
+            return {f: None for f in fields}
+
+        if not isinstance(table_df.index, pd.DatetimeIndex):
+            try:
+                table_df.index = pd.to_datetime(table_df.index)
+                self._data[stock_code][table_name] = table_df
+            except Exception:
+                return {f: None for f in fields}
+
+        pos = table_df.index.searchsorted(pd.Timestamp(date)) - 1
+        if pos < 0:
+            return {f: None for f in fields}
+
+        for field in fields:
+            if field in table_df.columns:
+                val = table_df.iat[pos, table_df.columns.get_loc(field)]
+                result[field] = None if pd.isna(val) else val
+            else:
+                result[field] = None
+
+        return result
+
+    def get_history(self, stock_code: str, table_name: str,
+                    date: datetime.date, count: int = 4,
+                    field: Optional[str] = None) -> Any:
+        """获取指定日期前已披露的最近N期财报数据
+
+        Args:
+            stock_code: 股票代码
+            table_name: 报表名称
+            date: 查询日期
+            count: 期数
+            field: 字段名，为空则返回整行
+
+        Returns:
+            field非空时返回list，否则返回DataFrame
+        """
+        self._ensure_table_loaded(stock_code, table_name)
+
+        stock_data = self._data.get(stock_code, {})
+        table_df = stock_data.get(table_name)
+
+        if table_df is None or table_df.empty:
+            return [] if field else pd.DataFrame()
+
+        if not isinstance(table_df.index, pd.DatetimeIndex):
+            try:
+                table_df.index = pd.to_datetime(table_df.index)
+                self._data[stock_code][table_name] = table_df
+            except Exception:
+                return [] if field else pd.DataFrame()
+
+        end_pos = table_df.index.searchsorted(pd.Timestamp(date))
+        start_pos = max(0, end_pos - count)
+        available = table_df.iloc[start_pos:end_pos]
+
+        if available.empty:
+            return [] if field else pd.DataFrame()
+
+        if field:
+            if field in available.columns:
+                vals = available[field].tolist()
+                return [v for v in vals if not pd.isna(v)]
+            return []
+
+        return available
+
+    def preload_stock(self, stock_code: str, tables: List[str] = None,
+                      start_time: str = '', end_time: str = '') -> None:
+        """预加载指定股票的所有/指定表到内存
+
+        Args:
+            stock_code: 股票代码
+            tables: 表名列表，为空则加载所有已知表
+            start_time: 加载起始时间（覆盖默认设置）
+            end_time: 加载结束时间（覆盖默认设置）
+        """
+        if tables is None:
+            tables = ['Balance', 'Income', 'CashFlow', 'Capital',
+                      'HolderNum', 'Top10Holder', 'Top10FlowHolder', 'Pershareindex']
+
+        for table_name in tables:
+            self._ensure_table_loaded(stock_code, table_name, start_time, end_time)
+
+    def preload_stocks(self, stock_list: List[str], tables: List[str] = None) -> None:
+        """预加载多只股票的财务数据到内存
+
+        财务数据预加载时会自动往前延伸1年（用于同比增长等计算），
+        避免回测早期（如2026年）加载到过老的数据（如2008年）。
+        使用多线程并发加载以提升速度。
+
+        Args:
+            stock_list: 股票代码列表
+            tables: 表名列表
+        """
+        extended_start_time = self._start_time
+        extended_end_time = self._end_time
+
+        if self._start_time and len(self._start_time) >= 10:
+            try:
+                start_dt = pd.to_datetime(self._start_time[:10])
+                extended_start_dt = start_dt - pd.DateOffset(years=1)
+                extended_start_time = extended_start_dt.strftime('%Y-%m-%d')
+            except Exception:
+                pass
+
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        completed = 0
+        total = len(stock_list)
+
+        def _load_one(stock_code):
+            self.preload_stock(stock_code, tables, extended_start_time, extended_end_time)
+            return stock_code
+
+        max_workers = min(8, len(stock_list))
+        batch_size = 200  # 分批处理，避免一次性创建过多锁导致 RuntimeError: can't allocate lock
+        if max_workers <= 1 or len(stock_list) <= 10:
+            for stock_code in stock_list:
+                self.preload_stock(stock_code, tables, extended_start_time, extended_end_time)
+        else:
+            for batch_start in range(0, total, batch_size):
+                batch = stock_list[batch_start:batch_start + batch_size]
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = {executor.submit(_load_one, s): s for s in batch}
+                    for future in as_completed(futures):
+                        try:
+                            future.result()
+                            completed += 1
+                            if completed % 100 == 0 or completed == total:
+                                self.logger.info(f"财务数据预加载进度: {completed}/{total}")
+                        except Exception as e:
+                            completed += 1
+                            symbol = futures[future]
+                            self.logger.warning(f"预加载 {symbol} 失败: {e}")
+
+    def get_latest_batch(self, stock_list: List[str], table_name: str,
+                         date: datetime.date, fields: List[str]) -> Dict[str, Dict[str, Any]]:
+        """批量获取多只股票的最新已披露财务字段值
+
+        Args:
+            stock_list: 股票代码列表
+            table_name: 报表名称
+            date: 查询日期
+            fields: 字段名列表
+
+        Returns:
+            { stock_code: { field1: value1, field2: value2, ... }, ... }
+        """
+        # 先批量预加载所需表
+        self.preload_stocks(stock_list, [table_name])
+
+        result = {}
+        for stock_code in stock_list:
+            result[stock_code] = self.get_latest_multi_fields(stock_code, table_name, date, fields)
+        return result
+
+
+class FinancialDataAdapter:
+    """财务数据适配器 - 提供策略层面的财报数据访问
+
+    核心功能：
+    1. 时间对齐：确保回测中只使用已披露的财报数据
+    2. 筛选接口：支持基于财务条件的股票筛选
+    3. 与 StrategyLogic 集成：通过 set_financial_data_adapter 注入
+
+    使用方式：
+        cache = FinancialDataCache(data_processor=processor)
+        adapter = FinancialDataAdapter(cache)
+        strategy.set_financial_data_adapter(adapter)
+
+        # 在策略中（按需加载，无需预下载全部数据）
+        pe = self.get_financial_field('000001.SZ', 'Pershareindex', 'eps_diluted')
+        selected = self.screen_stocks(lambda s: adapter.get_financial_field(s, 'Income', 'total_operate_income') > 1e10)
+    """
+
+    def __init__(self, cache: FinancialDataCache):
+        self._cache = cache
+        self._current_date: Optional[datetime.date] = None
+        self._industry_mapping: Dict[str, str] = {}
+        self._dividend_data: Dict[str, pd.DataFrame] = {}
+        self._index_constituent_mgr = None
+        self._sector: Optional[str] = None
+        self._index_code: Optional[str] = None
+        self._industry_constituent_mgr = None
+        self._cached_industry_date: Optional[str] = None
+        self._cached_industry_mapping: Dict[str, str] = {}
+        self.logger = logging.getLogger(self.__class__.__module__ + '.' + self.__class__.__name__)
+
+    @property
+    def cache(self) -> FinancialDataCache:
+        return self._cache
+
+    def set_current_date(self, date: datetime.date) -> None:
+        """设置当前回测日期（由框架在每个bar调用）"""
+        self._current_date = date
+
+    def get_current_date(self) -> Optional[datetime.date]:
+        return self._current_date
+
+    def set_industry_mapping(self, mapping: Dict[str, str]) -> None:
+        """设置行业分类映射
+
+        Args:
+            mapping: { stock_code: industry_name, ... }
+        """
+        self._industry_mapping = mapping or {}
+
+    def set_index_constituent_mgr(self, mgr, sector: str) -> None:
+        """设置指数成分股管理器和板块名称
+
+        设置后自动预加载CSV数据到内存，
+        get_stock_pool_for_date() 可通过 bisect 快速查找当日成分股。
+
+        Args:
+            mgr: IndexConstituentManager 实例
+            sector: 板块名称，如 '中证1000'
+        """
+        self._index_constituent_mgr = mgr
+        self._sector = sector
+        self._index_code = mgr.sector_to_index_code(sector)
+        if self._index_code:
+            mgr.preload(self._index_code)
+            self.logger.info(f"指数成分股管理器已设置并预加载: sector='{sector}', index_code={self._index_code}")
+
+    def set_industry_constituent_mgr(self, mgr) -> None:
+        """设置行业成分股管理器
+
+        设置后自动预加载所有行业CSV数据到内存，
+        get_industry() 可通过 bisect 快速查找当日行业分类。
+
+        Args:
+            mgr: IndustryConstituentManager 实例
+        """
+        self._industry_constituent_mgr = mgr
+        mgr.preload()
+        self.logger.info(f"行业成分股管理器已设置并预加载")
+
+    def get_stock_pool_for_date(self, date: Optional[datetime.date] = None) -> Optional[List[str]]:
+        """根据指定日期获取指数成分股
+
+        通过预加载的内存数据 + bisect 快速查找，O(logN) 复杂度。
+
+        Args:
+            date: 查询日期，默认使用当前回测日期
+
+        Returns:
+            成分股列表，未配置时返回None
+        """
+        if not self._index_constituent_mgr or not self._index_code:
+            return None
+
+        query_date = date or self._current_date
+        if query_date is None:
+            return None
+
+        date_str = query_date.strftime('%Y-%m-%d') if isinstance(query_date, datetime.date) else str(query_date)
+        return self._index_constituent_mgr.get_constituent_stocks_fast(self._index_code, date_str)
+
+    def get_industry_for_date(self, stock_code: str, date: Optional[datetime.date] = None) -> Optional[str]:
+        """根据指定日期获取股票行业分类
+
+        通过预加载的内存数据 + bisect 快速查找，O(logN) 复杂度。
+        同一天内使用日期级别缓存，避免重复 bisect 查找。
+
+        Args:
+            stock_code: 股票代码
+            date: 查询日期，默认使用当前回测日期
+
+        Returns:
+            行业名称，无数据返回None
+        """
+        if not self._industry_constituent_mgr:
+            return self._industry_mapping.get(stock_code)
+
+        query_date = date or self._current_date
+        if query_date is None:
+            return self._industry_mapping.get(stock_code)
+
+        date_str = query_date.strftime('%Y-%m-%d') if isinstance(query_date, datetime.date) else str(query_date)
+
+        if self._cached_industry_date != date_str:
+            self._cached_industry_date = date_str
+            self._cached_industry_mapping = self._industry_constituent_mgr.get_industry_mapping_fast(date_str)
+
+        return self._cached_industry_mapping.get(stock_code) or self._industry_mapping.get(stock_code)
+
+    def get_industry(self, stock_code: str) -> Optional[str]:
+        """获取指定股票的行业分类
+
+        优先使用 IndustryConstituentManager 按当前日期动态查询，
+        回退到静态映射。
+
+        Args:
+            stock_code: 股票代码
+
+        Returns:
+            行业名称，无数据返回None
+        """
+        return self.get_industry_for_date(stock_code)
+
+    def get_industry_mapping(self) -> Dict[str, str]:
+        """获取完整的行业分类映射"""
+        return dict(self._industry_mapping)
+
+    def set_dividend_data(self, dividend_data: Dict[str, pd.DataFrame]) -> None:
+        """设置分红数据
+
+        Args:
+            dividend_data: { stock_code: DataFrame(columns=[time, interest, ...]), ... }
+        """
+        self._dividend_data = dividend_data or {}
+
+    def _ensure_dividend_datetime_index(self, df: pd.DataFrame,
+                                         stock_code: str = '') -> Optional[pd.DataFrame]:
+        """确保分红数据 DataFrame 的索引是 DatetimeIndex
+
+        支持多种分红数据来源：
+        - BaoStock: 索引已经是 DatetimeIndex 或 YYYYMMDD 字符串
+        - QMT: time 列是毫秒时间戳，索引是 RangeIndex
+        - AKShare: 索引可能是其他格式
+        """
+        if isinstance(df.index, pd.DatetimeIndex):
+            return df
+
+        # QMT 格式：time 列是毫秒时间戳
+        if 'time' in df.columns and df['time'].dtype in ('float64', 'int64'):
+            try:
+                dt_values = pd.to_datetime(df['time'], unit='ms', errors='coerce')
+                valid = dt_values.notna()
+                if valid.any():
+                    df = df[valid].copy()
+                    df.index = dt_values[valid]
+                    df = df.sort_index()
+                    return df
+            except Exception:
+                pass
+
+        # BaoStock 格式：索引是 YYYYMMDD 字符串或整数
+        try:
+            dt_values = pd.to_datetime(df.index, format='%Y%m%d', errors='coerce')
+            valid = dt_values.notna()
+            if valid.any():
+                df = df[valid].copy()
+                df.index = dt_values[valid]
+                return df
+        except Exception:
+            pass
+
+        # 通用格式：直接尝试 to_datetime
+        try:
+            dt_values = pd.to_datetime(df.index, errors='coerce')
+            valid = dt_values.notna()
+            if valid.any():
+                df = df[valid].copy()
+                df.index = dt_values[valid]
+                return df
+        except Exception:
+            pass
+
+        if stock_code:
+            self.logger.debug(
+                f'[_ensure_dividend_datetime_index] {stock_code} '
+                f'无法构建DatetimeIndex, index类型={type(df.index).__name__}'
+            )
+        return None
+
+    def get_latest_dvps(self, stock_code: str,
+                        date: Optional[datetime.date] = None) -> Optional[float]:
+        """获取指定日期前最近一次每股派息金额
+
+        Args:
+            stock_code: 股票代码
+            date: 查询日期，默认使用当前回测日期
+
+        Returns:
+            每股派息金额，无数据返回None
+        """
+        query_date = date or self._current_date
+        if query_date is None:
+            return None
+
+        df = self._dividend_data.get(stock_code)
+        if df is None or df.empty:
+            return None
+
+        try:
+            df = self._ensure_dividend_datetime_index(df, stock_code)
+            if df is None:
+                return None
+            self._dividend_data[stock_code] = df
+
+            mask = df.index.date < query_date
+            available = df[mask]
+            if available.empty:
+                return None
+
+            latest = available.iloc[-1]
+            interest = latest.get('interest')
+            if interest is not None and not pd.isna(interest) and interest > 0:
+                return float(interest)
+            return None
+        except Exception:
+            return None
+
+    def get_dvps_history(self, stock_code: str, count: int = 3,
+                         date: Optional[datetime.date] = None) -> List[float]:
+        """获取指定日期前最近N次每股派息金额
+
+        Args:
+            stock_code: 股票代码
+            count: 期数
+            date: 查询日期
+
+        Returns:
+            每股派息金额列表，按时间升序
+        """
+        query_date = date or self._current_date
+        if query_date is None:
+            return []
+
+        df = self._dividend_data.get(stock_code)
+        if df is None or df.empty:
+            return []
+
+        try:
+            df = self._ensure_dividend_datetime_index(df, stock_code)
+            if df is None:
+                return []
+            self._dividend_data[stock_code] = df
+
+            mask = df.index.date < query_date
+            available = df[mask].tail(count)
+
+            if available.empty:
+                return []
+
+            result = []
+            for _, row in available.iterrows():
+                interest = row.get('interest')
+                if interest is not None and not pd.isna(interest) and interest > 0:
+                    result.append(float(interest))
+            return result
+        except Exception:
+            return []
+
+    def get_financial_field(self, stock_code: str, table_name: str,
+                            field: str, date: Optional[datetime.date] = None) -> Any:
+        """获取指定股票的最新已披露财务字段值
+
+        Args:
+            stock_code: 股票代码
+            table_name: 报表名称
+            field: 字段名
+            date: 查询日期，默认使用当前回测日期
+
+        Returns:
+            字段值，无数据返回None
+        """
+        query_date = date or self._current_date
+        if query_date is None:
+            return None
+        return self._cache.get_latest(stock_code, table_name, query_date, field)
+
+    def get_financial_fields(self, stock_code: str, table_name: str,
+                             fields: List[str], date: Optional[datetime.date] = None) -> Dict[str, Any]:
+        """获取指定股票的最新已披露财务多个字段值
+
+        Args:
+            stock_code: 股票代码
+            table_name: 报表名称
+            fields: 字段名列表
+            date: 查询日期
+
+        Returns:
+            { field1: value1, field2: value2, ... }
+        """
+        query_date = date or self._current_date
+        if query_date is None:
+            return {f: None for f in fields}
+        return self._cache.get_latest_multi_fields(stock_code, table_name, query_date, fields)
+
+    def get_financial_history(self, stock_code: str, table_name: str,
+                              field: str, count: int = 4,
+                              date: Optional[datetime.date] = None) -> List[Any]:
+        """获取指定股票最近N期的财务字段值
+
+        Args:
+            stock_code: 股票代码
+            table_name: 报表名称
+            field: 字段名
+            count: 期数
+            date: 查询日期
+
+        Returns:
+            字段值列表，按时间升序
+        """
+        query_date = date or self._current_date
+        if query_date is None:
+            return []
+        return self._cache.get_history(stock_code, table_name, query_date, count, field)
+
+    def screen_stocks(self, condition: Callable[[str], bool],
+                      stock_pool: Optional[List[str]] = None) -> List[str]:
+        """基于财务条件筛选股票
+
+        Args:
+            condition: 筛选条件函数，参数为股票代码，返回bool
+            stock_pool: 股票池，默认使用缓存中的全部股票
+
+        Returns:
+            满足条件的股票代码列表
+        """
+        pool = stock_pool or self._cache.get_stocks()
+        result = []
+        for stock in pool:
+            try:
+                if condition(stock):
+                    result.append(stock)
+            except Exception:
+                continue
+        return result
+
+    def rank_stocks(self, score_func: Callable[[str], Optional[float]],
+                    stock_pool: Optional[List[str]] = None,
+                    ascending: bool = False,
+                    top_n: Optional[int] = None) -> List[tuple]:
+        """基于财务指标对股票排序
+
+        Args:
+            score_func: 评分函数，参数为股票代码，返回数值（None表示排除）
+            stock_pool: 股票池
+            ascending: 是否升序
+            top_n: 返回前N名
+
+        Returns:
+            [(stock_code, score), ...] 排序后的列表
+        """
+        pool = stock_pool or self._cache.get_stocks()
+        scored = []
+        for stock in pool:
+            try:
+                score = score_func(stock)
+                if score is not None and not (isinstance(score, float) and (np.isnan(score) or np.isinf(score))):
+                    scored.append((stock, score))
+            except Exception:
+                continue
+
+        scored.sort(key=lambda x: x[1], reverse=not ascending)
+
+        if top_n:
+            scored = scored[:top_n]
+
+        return scored
+
+    def compute_growth_rate(self, stock_code: str, table_name: str,
+                            field: str, periods: int = 1,
+                            date: Optional[datetime.date] = None) -> Optional[float]:
+        """计算财务字段的同比增长率
+
+        Args:
+            stock_code: 股票代码
+            table_name: 报表名称
+            field: 字段名
+            periods: 增长期数（1=同比，即最近1期vs前1期）
+            date: 查询日期
+
+        Returns:
+            增长率，如 0.15 表示增长15%，无数据返回None
+        """
+        query_date = date or self._current_date
+        if query_date is None:
+            return None
+
+        history = self._cache.get_history(stock_code, table_name, query_date, periods + 1, field)
+        if len(history) < periods + 1:
+            return None
+
+        current = history[-1]
+        previous = history[-(periods + 1)]
+
+        if previous is None or previous == 0:
+            return None
+
+        return (current - previous) / abs(previous)
+
+    def get_financial_fields_batch(self, stock_list: List[str], table_name: str,
+                                   fields: List[str], date: Optional[datetime.date] = None) -> Dict[str, Dict[str, Any]]:
+        """批量获取多只股票的最新已披露财务字段值
+
+        Args:
+            stock_list: 股票代码列表
+            table_name: 报表名称
+            fields: 字段名列表
+            date: 查询日期，默认使用当前回测日期
+
+        Returns:
+            { stock_code: { field1: value1, field2: value2, ... }, ... }
+        """
+        query_date = date or self._current_date
+        if query_date is None:
+            return {stock: {f: None for f in fields} for stock in stock_list}
+        return self._cache.get_latest_batch(stock_list, table_name, query_date, fields)

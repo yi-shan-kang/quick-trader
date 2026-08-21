@@ -1,0 +1,1759 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>策略回测结果</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
+    <style>
+        [v-cloak] { display: none; }
+        body { background: #0f172a; color: #e2e8f0; }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #1e293b; }
+        ::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #64748b; }
+        .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; }
+        .metric-card { transition: transform 0.2s, box-shadow 0.2s; }
+        .metric-card:hover { transform: translateY(-2px); box-shadow: 0 8px 25px rgba(0,0,0,0.3); }
+        .collapse-toggle { cursor: pointer; user-select: none; transition: transform 0.2s; display: inline-block; }
+        .collapse-toggle.collapsed { transform: rotate(-90deg); }
+        .collapse-content { overflow: hidden; transition: max-height 0.25s ease, opacity 0.2s ease; }
+        .collapse-content.collapsed { max-height: 0 !important; opacity: 0; }
+        .strategy-item { transition: all 0.15s; cursor: pointer; }
+        .strategy-item:hover { background: #334155; }
+        .strategy-item:hover .edit-name-btn { opacity: 1; }
+        .strategy-item.active { background: #1e40af; border-color: #3b82f6; }
+        .run-item { transition: all 0.15s; cursor: pointer; }
+        .run-item:hover { background: #334155; }
+        .run-item.active { background: #065f46; border-color: #10b981; }
+        .fade-in { animation: fadeIn 0.3s ease-in; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+        .positive { color: #34d399; }
+        .negative { color: #f87171; }
+        .tab-btn { transition: all 0.15s; }
+        .tab-btn.active { background: #3b82f6; color: white; }
+        .pulse { animation: pulse 2s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+        #readme-content h1 { font-size: 1.5rem; font-weight: 700; margin: 1.5rem 0 0.75rem; color: #f8fafc; }
+        #readme-content h2 { font-size: 1.25rem; font-weight: 600; margin: 1.25rem 0 0.5rem; color: #e2e8f0; border-bottom: 1px solid #334155; padding-bottom: 0.25rem; }
+        #readme-content h3 { font-size: 1.1rem; font-weight: 600; margin: 1rem 0 0.5rem; color: #cbd5e1; }
+        #readme-content p { margin: 0.5rem 0; line-height: 1.6; }
+        #readme-content ul, #readme-content ol { margin: 0.5rem 0; padding-left: 1.5rem; }
+        #readme-content li { margin: 0.25rem 0; }
+        #readme-content code { background: #0f172a; padding: 0.15rem 0.35rem; border-radius: 4px; font-size: 0.85em; color: #f472b6; }
+        #readme-content pre { background: #0f172a; padding: 0.75rem; border-radius: 8px; overflow-x: auto; margin: 0.75rem 0; }
+        #readme-content pre code { background: transparent; padding: 0; color: #e2e8f0; }
+        #readme-content table { width: 100%; border-collapse: collapse; margin: 0.75rem 0; font-size: 0.85rem; }
+        #readme-content th, #readme-content td { border: 1px solid #334155; padding: 0.4rem 0.6rem; text-align: left; }
+        #readme-content th { background: #1e293b; font-weight: 600; color: #94a3b8; }
+        #readme-content tr:nth-child(even) { background: #1e293b; }
+        #readme-content blockquote { border-left: 3px solid #3b82f6; padding-left: 0.75rem; margin: 0.75rem 0; color: #94a3b8; }
+        #readme-content a { color: #60a5fa; text-decoration: underline; }
+        #strategy-code-content { font-family: 'Consolas', 'Monaco', 'Courier New', monospace; font-size: 0.82rem; line-height: 1.55; tab-size: 4; white-space: pre; overflow-x: auto; color: #e2e8f0; }
+        .log-content { font-family: 'Consolas', 'Monaco', 'Courier New', monospace; font-size: 0.78rem; line-height: 1.5; white-space: pre-wrap; word-break: break-all; max-height: 600px; overflow-y: auto; background: #0f172a; padding: 1rem; border-radius: 8px; }
+        .log-content .log-info { color: #94a3b8; }
+        .log-content .log-warning { color: #fbbf24; }
+        .log-content .log-error { color: #f87171; }
+        .log-content .log-debug { color: #64748b; }
+        .cache-entry { transition: all 0.1s; cursor: pointer; }
+        .cache-entry:hover { background: #334155; }
+        .cache-file:hover { background: #334155; }
+        .data-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+        .data-table th, .data-table td { border: 1px solid #334155; padding: 0.3rem 0.5rem; text-align: left; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .data-table th { background: #1e293b; color: #94a3b8; font-weight: 600; position: sticky; top: 0; }
+        .data-table tr:nth-child(even) { background: #1e293b; }
+        .batch-bar { background: #1e293b; border: 1px solid #334155; border-radius: 8px; }
+        .checkbox-custom { appearance: none; width: 16px; height: 16px; border: 2px solid #475569; border-radius: 3px; background: transparent; cursor: pointer; position: relative; flex-shrink: 0; }
+        .checkbox-custom:checked { background: #3b82f6; border-color: #3b82f6; }
+        .checkbox-custom:checked::after { content: '✓'; position: absolute; top: -2px; left: 2px; color: white; font-size: 11px; font-weight: bold; }
+        /* Sidebar collapsible */
+        .sidebar-panel { transition: width 0.3s cubic-bezier(.4,0,.2,1), opacity 0.3s ease; overflow: hidden; }
+        .sidebar-panel.closed { width: 0 !important; opacity: 0; }
+        .sidebar-toggle-btn {
+            position: absolute;
+            right: -14px;
+            top: 50%;
+            transform: translateY(-50%);
+            z-index: 50;
+            width: 28px;
+            height: 48px;
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-left: none;
+            border-radius: 0 8px 8px 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            color: #64748b;
+            transition: background 0.15s, color 0.15s;
+        }
+        .sidebar-toggle-btn:hover { background: #334155; color: #e2e8f0; }
+        .sidebar-toggle-btn svg { transition: transform 0.3s; }
+        .sidebar-toggle-btn.closed svg { transform: rotate(180deg); }
+        /* Two-column inner layout */
+        .sidebar-inner { display: flex; height: 100%; min-width: 0; }
+        .sidebar-col { display: flex; flex-direction: column; overflow: hidden; }
+        .sidebar-col-left { width: 188px; flex-shrink: 0; border-right: 1px solid #334155; }
+        .sidebar-col-right { flex: 1; min-width: 140px; max-width: 240px; }
+        .sidebar-col-scroll { flex: 1; overflow-y: auto; }
+    </style>
+</head>
+<body>
+<div id="app" v-cloak>
+    <div class="flex h-screen overflow-hidden">
+        <!-- Sidebar wrapper: relative so the toggle button can be position: absolute -->
+        <div class="flex-shrink-0 relative flex" style="position: relative;">
+        <!-- The collapsible panel -->
+        <aside class="sidebar-panel flex flex-col border-r border-slate-700 bg-slate-900" :class="{ closed: !sidebarOpen }" :style="sidebarOpen ? 'width:400px' : 'width:0'">
+            <!-- Header + tab switcher (spans full width of the two columns) -->
+            <div class="flex-shrink-0">
+                <div class="p-3 border-b border-slate-700">
+                    <h1 class="text-base font-bold text-white flex items-center gap-2">
+                        <svg class="w-5 h-5 text-blue-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+                        </svg>
+                        策略回测结果
+                    </h1>
+                </div>
+                <div class="flex border-b border-slate-700">
+                    <button @click="sidebarView = 'strategy'"
+                            class="flex-1 py-2 text-xs font-medium text-center transition-colors"
+                            :class="sidebarView === 'strategy' ? 'text-blue-400 border-b-2 border-blue-400 bg-slate-800' : 'text-slate-400 hover:text-slate-300'">
+                        策略回测
+                    </button>
+                    <button @click="sidebarView = 'cache'; browseCache('')"
+                            class="flex-1 py-2 text-xs font-medium text-center transition-colors"
+                            :class="sidebarView === 'cache' ? 'text-blue-400 border-b-2 border-blue-400 bg-slate-800' : 'text-slate-400 hover:text-slate-300'">
+                        数据缓存
+                    </button>
+                </div>
+            </div>
+
+            <!-- Strategy view: two columns -->
+            <div v-if="sidebarView === 'strategy'" class="sidebar-inner flex-1 min-h-0">
+                <!-- LEFT: 策略列表 -->
+                <div class="sidebar-col sidebar-col-left">
+                    <div class="px-3 pt-2 pb-1 flex-shrink-0">
+                        <div class="text-xs text-slate-400 uppercase tracking-wider flex items-center gap-1.5 cursor-pointer select-none"
+                             @click="collapsedAll = !collapsedAll">
+                            <span class="collapse-toggle" :class="{ collapsed: collapsedAll }">▼</span>
+                            策略列表
+                        </div>
+                    </div>
+                    <div class="sidebar-col-scroll px-2 pb-2">
+                        <div class="collapse-content" :class="{ collapsed: collapsedAll }" :style="{ maxHeight: collapsedAll ? '0' : '9999px' }">
+                            <div v-if="loading" class="text-center py-4">
+                                <div class="pulse text-slate-400">加载中...</div>
+                            </div>
+                            <div v-else-if="strategies.length === 0" class="text-center py-4 text-slate-500 text-sm">
+                                未发现回测结果
+                            </div>
+                            <div v-else class="space-y-2">
+                                <!-- 标准策略 -->
+                                <div v-if="standardStrategies.length > 0">
+                                    <div class="text-xs text-slate-500 font-medium mb-1 flex items-center gap-1.5 cursor-pointer select-none"
+                                         @click="collapsedStandard = !collapsedStandard">
+                                        <span class="collapse-toggle" :class="{ collapsed: collapsedStandard }">▼</span>
+                                        <span class="w-2 h-2 rounded-full bg-slate-500 flex-shrink-0"></span>
+                                        标准策略
+                                    </div>
+                                    <div class="collapse-content" :class="{ collapsed: collapsedStandard }" :style="{ maxHeight: collapsedStandard ? '0' : '9999px' }">
+                                    <div class="space-y-0.5">
+                                        <div v-for="s in standardStrategies" :key="s.name"
+                                             class="strategy-item rounded-lg px-2 py-2 border border-transparent group"
+                                             :class="{ active: selectedStrategy === s.name }"
+                                             @click="selectStrategy(s.name)">
+                                            <div class="flex items-center justify-between">
+                                                <div class="flex items-center gap-1 min-w-0 flex-1" @dblclick.stop="startEditName(s)">
+                                                    <span v-if="editingName !== s.name" class="font-medium text-xs truncate cursor-default">{{ s.display_name || formatStrategyName(s.name) }}</span>
+                                                    <input v-else
+                                                           v-model="editNameValue"
+                                                           @blur="saveEditName(s)"
+                                                           @keydown.enter="saveEditName(s)"
+                                                           @keydown.escape="cancelEditName"
+                                                           @click.stop
+                                                           class="bg-slate-700 text-white text-xs px-1 py-0.5 rounded border border-blue-500 outline-none w-full"
+                                                           ref="editNameInput" />
+                                                    <button v-if="editingName !== s.name" @click.stop="startEditName(s)"
+                                                            class="opacity-0 group-hover:opacity-100 transition-opacity text-slate-500 hover:text-slate-300 flex-shrink-0"
+                                                            title="编辑名称">
+                                                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/>
+                                                        </svg>
+                                                    </button>
+                                                </div>
+                                            </div>
+                                            <div class="text-xs text-slate-500 mt-0.5">{{ s.run_count }} 次回测</div>
+                                        </div>
+                                    </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- RIGHT: 回测记录 -->
+                <div class="sidebar-col sidebar-col-right">
+                    <div class="px-3 pt-2 pb-1 flex-shrink-0 border-b border-slate-700/50">
+                        <div class="flex items-center justify-between">
+                            <div class="text-xs text-slate-400 uppercase tracking-wider">回测记录</div>
+                            <div v-if="runs.length > 0" class="flex items-center gap-1.5">
+                                <label class="flex items-center gap-1 cursor-pointer text-xs text-slate-400 hover:text-slate-300">
+                                    <input type="checkbox" class="checkbox-custom"
+                                           :checked="selectedRuns.length === runs.length && runs.length > 0"
+                                           @change="toggleSelectAllRuns" />
+                                    全选
+                                </label>
+                                <button v-if="selectedRuns.length > 0"
+                                        @click="batchDeleteRuns"
+                                        class="px-1.5 py-0.5 rounded text-xs bg-red-600/80 text-white hover:bg-red-500 transition-colors">
+                                    删({{ selectedRuns.length }})
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="sidebar-col-scroll px-2 pb-2 pt-1">
+                        <div v-if="!selectedStrategy" class="text-center py-8 text-slate-500 text-xs">请先选择策略</div>
+                        <div v-else class="space-y-1">
+                            <div v-for="run in runs" :key="run.run_id"
+                                 class="run-item rounded-lg px-2 py-2 border border-transparent group relative"
+                                 :class="{ active: selectedRunId === run.run_id }"
+                                 @click="selectRun(run.run_id)">
+                                <div class="flex items-center justify-between">
+                                    <div class="flex items-center gap-1.5">
+                                        <input type="checkbox" class="checkbox-custom"
+                                               :checked="selectedRuns.includes(run.run_id)"
+                                               @click.stop="toggleRunSelection(run.run_id)" />
+                                        <div class="text-xs text-slate-400">{{ formatTimestamp(run.timestamp) }}</div>
+                                    </div>
+                                    <button @click.stop="deleteRun(run.run_id)"
+                                            class="opacity-0 group-hover:opacity-100 transition-opacity text-red-400 hover:text-red-300"
+                                            title="删除此回测记录">
+                                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                        </svg>
+                                    </button>
+                                </div>
+                                <div class="flex items-center gap-3 mt-1 ml-5">
+                                    <span class="text-sm font-mono"
+                                          :class="run.total_return_pct >= 0 ? 'positive' : 'negative'">
+                                        {{ formatPercent(run.total_return_pct) }}
+                                    </span>
+                                    <span class="text-xs text-slate-400">SR: {{ formatNum(run.sharpe_ratio) }}</span>
+                                </div>
+                                <div v-if="run.pool || run.benchmark" class="flex items-center gap-1 mt-1 ml-5 flex-wrap">
+                                    <span v-if="run.pool" class="text-xs px-1 py-0.5 rounded bg-blue-900/40 text-blue-400/80">{{ run.pool }}</span>
+                                    <span v-if="run.benchmark" class="text-xs px-1 py-0.5 rounded bg-amber-900/40 text-amber-400/80">{{ benchmarkDisplayName(run.benchmark) }}</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Cache view: full width -->
+            <div v-if="sidebarView === 'cache'" class="flex-1 overflow-y-auto p-3">
+                <div class="flex items-center gap-1 text-xs text-slate-400 mb-3 flex-wrap">
+                    <span class="cursor-pointer hover:text-blue-400" @click="browseCache('')">.cache</span>
+                    <template v-for="(seg, i) in cachePath.split('/').filter(Boolean)" :key="i">
+                        <span>/</span>
+                        <span class="cursor-pointer hover:text-blue-400"
+                              @click="browseCache(cachePath.split('/').filter(Boolean).slice(0, i+1).join('/'))">
+                            {{ seg }}
+                        </span>
+                    </template>
+                </div>
+                <div v-if="cacheLoading" class="text-center py-6">
+                    <div class="pulse text-slate-400">加载中...</div>
+                </div>
+                <div v-else-if="cacheEntries.length === 0" class="text-center py-6 text-slate-500 text-sm">
+                    此目录为空
+                </div>
+                <div v-else class="space-y-0.5">
+                    <div v-for="entry in cacheEntries" :key="entry.path"
+                         class="flex items-center justify-between px-3 py-2 rounded-lg"
+                         :class="entry.type === 'dir' ? 'cache-entry' : 'cache-file'"
+                         @click="entry.type === 'dir' ? browseCache(entry.path) : viewCacheFile(entry.path)">
+                        <div class="flex items-center gap-2 min-w-0">
+                            <svg v-if="entry.type === 'dir'" class="w-4 h-4 text-amber-400 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                                <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z"/>
+                            </svg>
+                            <svg v-else class="w-4 h-4 text-blue-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                            </svg>
+                            <span class="text-sm text-slate-300 truncate">{{ entry.name }}</span>
+                            <span v-if="entry.ext" class="text-xs px-1.5 py-0.5 rounded bg-slate-700 text-slate-400 flex-shrink-0">{{ entry.ext }}</span>
+                        </div>
+                        <div class="flex items-center gap-2 flex-shrink-0">
+                            <span v-if="entry.size" class="text-xs text-slate-500">{{ formatFileSize(entry.size) }}</span>
+                            <svg v-if="entry.type === 'dir'" class="w-4 h-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                            </svg>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Sidebar toggle button -->
+        <button class="sidebar-toggle-btn" :class="{ closed: !sidebarOpen }" @click="sidebarOpen = !sidebarOpen" :title="sidebarOpen ? '收起侧边栏' : '展开侧边栏'">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+            </svg>
+        </button>
+        </div>
+
+        <main class="flex-1 flex flex-col overflow-hidden">
+            <div v-if="sidebarView === 'cache'" class="flex-1 overflow-y-auto p-6">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-2xl font-bold text-white">数据缓存浏览器</h2>
+                    <div class="flex items-center gap-2">
+                        <button @click="browseCache('')"
+                                class="px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-700 text-slate-300 hover:bg-slate-600">
+                            根目录
+                        </button>
+                        <button v-if="cachePath" @click="browseCache(cacheParent)"
+                                class="px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-700 text-slate-300 hover:bg-slate-600">
+                            上级目录
+                        </button>
+                    </div>
+                </div>
+
+                <div v-if="cacheViewData" class="card p-4 mb-4 fade-in">
+                    <div class="flex items-center justify-between mb-3">
+                        <h3 class="text-sm font-semibold text-slate-300">
+                            {{ cacheViewData.path }}
+                            <span class="text-xs text-slate-500 ml-2">{{ cacheViewData.format }}</span>
+                        </h3>
+                        <button @click="cacheViewData = null"
+                                class="text-slate-400 hover:text-slate-300 text-xs">关闭</button>
+                    </div>
+
+                    <div v-if="cacheViewData.error" class="text-red-400 text-sm py-2">
+                        读取失败: {{ cacheViewData.error }}
+                    </div>
+
+                    <div v-else-if="cacheViewData.format === 'json'" class="overflow-auto max-h-[500px]">
+                        <pre class="text-xs text-slate-300 whitespace-pre-wrap" style="font-family: Consolas, Monaco, monospace;">{{ JSON.stringify(cacheViewData.data, null, 2) }}</pre>
+                    </div>
+
+                    <div v-else-if="cacheViewData.format === 'parquet' || cacheViewData.format === 'pkl_dataframe'">
+                        <div class="flex items-center gap-4 mb-3 text-xs text-slate-400">
+                            <span>行数: {{ cacheViewData.total?.toLocaleString() || cacheViewData.shape?.[0]?.toLocaleString() || 0 }}</span>
+                            <span>列数: {{ cacheViewData.shape?.[1] }}</span>
+                            <span v-if="cacheViewData.offset !== undefined">
+                                ({{ (cacheViewData.offset || 0).toLocaleString() }} ~ {{ Math.min((cacheViewData.offset || 0) + cacheViewData.head?.length, cacheViewData.total || 0).toLocaleString() }})
+                            </span>
+                            <span v-if="cacheViewData.date_filter" class="text-green-400">
+                                当前筛选: {{ cacheViewData.date_filter }}
+                            </span>
+                        </div>
+                        <div v-if="cacheDateHierarchy" class="mb-3 p-2 bg-slate-800 rounded flex items-center gap-2 flex-wrap">
+                            <span class="text-xs text-slate-400">日期筛选:</span>
+                            <select v-model="selectedYear" @change="selectedMonth = ''; selectedDay = ''; applyDateFilter()"
+                                    class="bg-slate-700 text-xs text-slate-200 px-2 py-1 rounded border border-slate-600">
+                                <option value="">-- 年份 --</option>
+                                <option v-for="y in cacheDateHierarchy.years" :key="y" :value="y">{{ y }}年</option>
+                            </select>
+                            <select v-if="selectedYear && cacheDateHierarchy.year_months[selectedYear]" v-model="selectedMonth"
+                                    @change="selectedDay = ''; applyDateFilter()"
+                                    class="bg-slate-700 text-xs text-slate-200 px-2 py-1 rounded border border-slate-600">
+                                <option value="">-- 月份 --</option>
+                                <option v-for="m in cacheDateHierarchy.year_months[selectedYear]" :key="m" :value="m">{{ m }}月</option>
+                            </select>
+                            <select v-if="selectedYear && selectedMonth && cacheDateHierarchy.year_month_days[selectedYear]?.[selectedMonth]"
+                                    v-model="selectedDay" @change="applyDateFilter()"
+                                    class="bg-slate-700 text-xs text-slate-200 px-2 py-1 rounded border border-slate-600">
+                                <option value="">-- 日期 --</option>
+                                <option v-for="d in cacheDateHierarchy.year_month_days[selectedYear][selectedMonth]" :key="d" :value="String(d).padStart(2, '0')">{{ d }}日</option>
+                            </select>
+                            <button v-if="selectedYear || selectedMonth || selectedDay" @click="selectedYear = ''; selectedMonth = ''; selectedDay = ''; applyDateFilter()"
+                                    class="text-xs text-red-400 hover:text-red-300 px-2 py-1">
+                                清除筛选
+                            </button>
+                        </div>
+                        <div class="mb-3 flex flex-wrap gap-2 max-h-24 overflow-y-auto">
+                            <span v-for="col in cacheViewData.all_columns || cacheViewData.columns" :key="col"
+                                  class="text-xs px-2 py-0.5 rounded bg-slate-700"
+                                  :class="cacheViewData.has_index && col === cacheViewData.index_name ? 'text-amber-300' : 'text-blue-300'">
+                                {{ col }}
+                                <span class="text-slate-500 ml-1">{{ cacheViewData.dtypes?.[col] || '' }}</span>
+                            </span>
+                        </div>
+                        <div class="overflow-auto max-h-[500px]" id="cache-table-body">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th v-for="col in (cacheViewData.all_columns || cacheViewData.columns)" :key="col"
+                                            :class="cacheViewData.has_index && col === cacheViewData.index_name ? 'text-amber-400' : ''">
+                                            {{ col }}
+                                        </th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr v-for="(row, i) in cacheAllRows" :key="i">
+                                        <td v-for="col in (cacheViewData.all_columns || cacheViewData.columns)" :key="col"
+                                            :title="String(row[col] ?? '')"
+                                            :class="cacheViewData.has_index && col === cacheViewData.index_name ? 'text-amber-300/80' : ''">
+                                            {{ row[col] != null ? (typeof row[col] === 'number' ? (Number.isInteger(row[col]) ? row[col] : row[col].toFixed(4)) : String(row[col]).substring(0, 50)) : '' }}
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <div v-if="cacheLoading" class="text-center py-2 text-xs text-slate-500">
+                            <div class="pulse">加载中...</div>
+                        </div>
+                    </div>
+
+                    <div v-else-if="cacheViewData.format === 'text'" class="overflow-auto max-h-[500px]">
+                        <pre class="text-xs text-slate-300 whitespace-pre-wrap" style="font-family: Consolas, Monaco, monospace;">{{ cacheViewData.content }}</pre>
+                    </div>
+
+                    <div v-else-if="cacheViewData.format === 'pkl_other'" class="overflow-auto max-h-[500px]">
+                        <div class="text-xs text-slate-400 mb-2">类型: {{ cacheViewData.type }}</div>
+                        <pre class="text-xs text-slate-300 whitespace-pre-wrap" style="font-family: Consolas, Monaco, monospace;">{{ cacheViewData.repr }}</pre>
+                    </div>
+
+                    <div v-else class="text-center py-4 text-slate-500 text-sm">
+                        {{ cacheViewData.message || '此格式暂不支持在线预览' }}
+                    </div>
+                </div>
+
+                <div v-else class="flex items-center justify-center" style="min-height: 400px;">
+                    <div class="text-center text-slate-500">
+                        <svg class="w-12 h-12 mx-auto mb-3 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
+                        </svg>
+                        <p>请从左侧选择文件查看</p>
+                    </div>
+                </div>
+            </div>
+
+            <template v-else>
+            <div v-if="!selectedStrategy" class="flex-1 overflow-y-auto flex items-center justify-center">
+                <div class="text-center">
+                    <svg class="w-16 h-16 text-slate-600 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+                    </svg>
+                    <p class="text-slate-500 text-lg">请从左侧选择一个策略</p>
+                    <p class="text-slate-600 text-sm mt-2">查看回测结果与可视化分析</p>
+                </div>
+            </div>
+
+            <div v-else class="flex flex-col h-full">
+                <div class="flex-shrink-0 p-6 pb-0">
+                    <div class="flex items-center justify-between mb-6">
+                        <div>
+                            <h2 class="text-2xl font-bold text-white">{{ currentStrategyDisplayName }}</h2>
+                            <div class="flex items-center gap-4 mt-1 flex-wrap" v-if="currentRun">
+                                <span class="text-slate-400 text-sm">
+                                    回测周期: {{ currentRun.config?.start_date || '-' }} ~ {{ currentRun.config?.end_date || '-' }}
+                                </span>
+                                <span v-if="currentRun.config?.pool" class="inline-flex items-center gap-1 text-sm">
+                                    <span class="px-2 py-0.5 rounded bg-blue-900/50 text-blue-300 border border-blue-700/50">
+                                        <svg class="w-3 h-3 inline-block mr-0.5 -mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/>
+                                        </svg>
+                                        {{ currentRun.config.pool }}
+                                    </span>
+                                </span>
+                                <span v-if="currentRun.config?.benchmark" class="inline-flex items-center gap-1 text-sm">
+                                    <span class="px-2 py-0.5 rounded bg-amber-900/50 text-amber-300 border border-amber-700/50">
+                                        <svg class="w-3 h-3 inline-block mr-0.5 -mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/>
+                                        </svg>
+                                        {{ benchmarkDisplayName(currentRun.config.benchmark) }}
+                                    </span>
+                                </span>
+                            </div>
+                        </div>
+                        <div class="flex gap-2">
+                            <button @click="activeTab = 'detail'" class="tab-btn px-4 py-2 rounded-lg text-sm font-medium"
+                                    :class="activeTab === 'detail' ? 'active' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'">
+                                详情
+                            </button>
+                            <button @click="activeTab = 'compare'" class="tab-btn px-4 py-2 rounded-lg text-sm font-medium"
+                                    :class="activeTab === 'compare' ? 'active' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'">
+                                对比
+                            </button>
+                            <button @click="switchTab('readme')" class="tab-btn px-4 py-2 rounded-lg text-sm font-medium"
+                                    :class="activeTab === 'readme' ? 'active' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'">
+                                策略逻辑
+                            </button>
+                            <button @click="switchTab('code')" class="tab-btn px-4 py-2 rounded-lg text-sm font-medium"
+                                    :class="activeTab === 'code' ? 'active' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'">
+                                策略代码
+                            </button>
+                            <button @click="switchTab('log')" class="tab-btn px-4 py-2 rounded-lg text-sm font-medium"
+                                    :class="activeTab === 'log' ? 'active' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'">
+                                运行日志
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div class="flex-1 overflow-y-auto px-6 pb-6 fade-in" :key="selectedRunId">
+
+                <div v-if="activeTab === 'readme' && strategyReadme" class="card p-6 mb-6 fade-in">
+                    <div id="readme-content" class="prose prose-invert prose-sm max-w-none text-slate-300"></div>
+                </div>
+
+                <div v-if="activeTab === 'code'" class="card p-6 mb-6 fade-in">
+                    <div v-if="strategyCode" class="relative">
+                        <div class="absolute top-2 right-2 flex items-center gap-2">
+                            <span class="text-xs text-slate-500 italic">此代码仅供备份参考，不可编辑</span>
+                            <button @click="copyCode" class="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
+                                    :class="codeCopied ? 'bg-green-600 text-white' : 'bg-slate-600 text-slate-300 hover:bg-slate-500'"
+                                    title="复制代码">
+                                {{ codeCopied ? '已复制' : '复制' }}
+                            </button>
+                        </div>
+                        <div id="strategy-code-content">{{ strategyCode }}</div>
+                    </div>
+                    <div v-else class="text-center py-8 text-slate-500">
+                        <p>该回测记录未包含策略代码</p>
+                        <p class="text-xs mt-1">仅新版回测结果包含策略代码信息</p>
+                    </div>
+                </div>
+
+                <div v-if="activeTab === 'detail' && currentRun">
+                    <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
+                        <div class="card metric-card p-4">
+                            <div class="text-xs text-slate-400 mb-1">总收益率</div>
+                            <div class="text-xl font-bold" :class="currentRun.metrics.total_return_pct >= 0 ? 'positive' : 'negative'">
+                                {{ formatPercent(currentRun.metrics.total_return_pct) }}
+                            </div>
+                        </div>
+                        <div class="card metric-card p-4">
+                            <div class="text-xs text-slate-400 mb-1">年化收益率</div>
+                            <div class="text-xl font-bold" :class="currentRun.metrics.annual_return_pct >= 0 ? 'positive' : 'negative'">
+                                {{ formatPercent(currentRun.metrics.annual_return_pct) }}
+                            </div>
+                        </div>
+                        <div class="card metric-card p-4">
+                            <div class="text-xs text-slate-400 mb-1">夏普比率</div>
+                            <div class="text-xl font-bold" :class="currentRun.metrics.sharpe_ratio >= 0 ? 'positive' : 'negative'">
+                                {{ formatNum(currentRun.metrics.sharpe_ratio) }}
+                            </div>
+                        </div>
+                        <div class="card metric-card p-4">
+                            <div class="text-xs text-slate-400 mb-1">最大回撤</div>
+                            <div class="text-xl font-bold negative">{{ formatPercent(currentRun.metrics.max_drawdown_pct) }}</div>
+                        </div>
+                        <div class="card metric-card p-4">
+                            <div class="text-xs text-slate-400 mb-1">胜率</div>
+                            <div class="text-xl font-bold text-white">
+                                {{ calcWinRate(currentRun.metrics) }}
+                            </div>
+                        </div>
+                        <div class="card metric-card p-4">
+                            <div class="text-xs text-slate-400 mb-1">交易天数</div>
+                            <div class="text-xl font-bold text-white">{{ currentRun.metrics.total_trading_days }}</div>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                        <div class="card p-3">
+                            <div class="text-xs text-slate-400 mb-1">初始资金</div>
+                            <div class="text-sm font-medium text-white">{{ formatMoney(currentRun.metrics.initial_capital) }}</div>
+                        </div>
+                        <div class="card p-3">
+                            <div class="text-xs text-slate-400 mb-1">最终净值</div>
+                            <div class="text-sm font-medium text-white">{{ formatMoney(currentRun.metrics.final_value) }}</div>
+                        </div>
+                        <div class="card p-3">
+                            <div class="text-xs text-slate-400 mb-1">总手续费</div>
+                            <div class="text-sm font-medium text-white">{{ formatMoney(currentRun.metrics.fee) }}</div>
+                        </div>
+                        <div class="card p-3">
+                            <div class="text-xs text-slate-400 mb-1">总成交额</div>
+                            <div class="text-sm font-medium text-white">{{ formatMoney(currentRun.metrics.turnover) }}</div>
+                        </div>
+                    </div>
+
+                    <div class="card p-4 mb-6">
+                        <h3 class="text-sm font-semibold text-slate-300 mb-3">权益曲线 vs {{ currentRun.config?.benchmark ? benchmarkDisplayName(currentRun.config.benchmark) : '基准' }}</h3>
+                        <div id="equity-chart" style="height: 420px;"></div>
+                    </div>
+
+                    <div class="card p-4 mb-6">
+                        <h3 class="text-sm font-semibold text-slate-300 mb-3">回撤曲线</h3>
+                        <div id="drawdown-chart" style="height: 250px;"></div>
+                    </div>
+
+                    <div class="card p-4">
+                        <div class="flex items-center justify-between mb-3">
+                            <h3 class="text-sm font-semibold text-slate-300">交易日志</h3>
+                            <span class="text-xs text-slate-500">共 {{ currentRun.trade_log?.length || 0 }} 条记录</span>
+                        </div>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-sm">
+                                <thead>
+                                    <tr class="text-left text-slate-400 border-b border-slate-700">
+                                        <th class="pb-2 pr-4">#</th>
+                                        <th class="pb-2 pr-4">代码</th>
+                                        <th class="pb-2 pr-4">方向</th>
+                                        <th class="pb-2 pr-4">开平</th>
+                                        <th class="pb-2 pr-4 text-right">数量</th>
+                                        <th class="pb-2 pr-4 text-right">委托价</th>
+                                        <th class="pb-2 pr-4 text-right">成交价</th>
+                                        <th class="pb-2 pr-4 text-right">手续费</th>
+                                        <th class="pb-2 pr-4 text-right">盈亏</th>
+                                        <th class="pb-2 pr-4">备注</th>
+                                        <th class="pb-2">时间</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr v-for="(trade, idx) in paginatedTrades" :key="idx"
+                                        class="border-b border-slate-800 hover:bg-slate-800/50">
+                                        <td class="py-2 pr-4 text-slate-500">{{ trade.order_id }}</td>
+                                        <td class="py-2 pr-4 font-mono text-blue-300">{{ trade.instrument_id }}</td>
+                                        <td class="py-2 pr-4">
+                                            <span :class="trade.direction === '0' ? 'text-red-400' : 'text-green-400'">
+                                                {{ trade.direction === '0' ? '买' : '卖' }}
+                                            </span>
+                                        </td>
+                                        <td class="py-2 pr-4 text-slate-300">
+                                            {{ trade.offset === '0' ? '开' : '平' }}
+                                        </td>
+                                        <td class="py-2 pr-4 text-right font-mono">{{ trade.volume }}</td>
+                                        <td class="py-2 pr-4 text-right font-mono">{{ formatNum(trade.order_price) }}</td>
+                                        <td class="py-2 pr-4 text-right font-mono">{{ formatNum(trade.trade_price) }}</td>
+                                        <td class="py-2 pr-4 text-right font-mono text-slate-400">{{ formatNum(trade.fee) }}</td>
+                                        <td class="py-2 pr-4 text-right font-mono"
+                                            :class="trade.pnl > 0 ? 'positive' : trade.pnl < 0 ? 'negative' : 'text-slate-400'">
+                                            {{ formatNum(trade.pnl) }}
+                                        </td>
+                                        <td class="py-2 pr-4 text-slate-400">{{ trade.memo || '-' }}</td>
+                                        <td class="py-2 text-slate-500 text-xs">{{ trade.trade_time || '-' }}</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <div class="flex items-center justify-between mt-4" v-if="currentRun.trade_log && currentRun.trade_log.length > tradePageSize">
+                            <span class="text-xs text-slate-500">
+                                显示 {{ (tradePage - 1) * tradePageSize + 1 }} - {{ Math.min(tradePage * tradePageSize, currentRun.trade_log.length) }} / {{ currentRun.trade_log.length }}
+                            </span>
+                            <div class="flex items-center gap-1.5">
+                                <button @click="tradePage = Math.max(1, tradePage - 1)"
+                                        :disabled="tradePage <= 1"
+                                        class="px-2.5 py-1 rounded text-xs bg-slate-700 text-slate-300 hover:bg-slate-600 disabled:opacity-50">
+                                    上一页
+                                </button>
+                                <button v-for="p in visibleTradePages" :key="p"
+                                        @click="typeof p === 'number' && (tradePage = p)"
+                                        :disabled="p === '...'"
+                                        class="min-w-[28px] px-1.5 py-1 rounded text-xs text-center disabled:opacity-100"
+                                        :class="p === tradePage ? 'bg-blue-600 text-white' : p === '...' ? 'bg-transparent text-slate-500 cursor-default' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'">
+                                    {{ p }}
+                                </button>
+                                <button @click="tradePage = Math.min(totalTradePages, tradePage + 1)"
+                                        :disabled="tradePage >= totalTradePages"
+                                        class="px-2.5 py-1 rounded text-xs bg-slate-700 text-slate-300 hover:bg-slate-600 disabled:opacity-50">
+                                    下一页
+                                </button>
+                                <span class="text-xs text-slate-500 ml-1">共 {{ totalTradePages }} 页</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div v-if="activeTab === 'compare'">
+                    <div class="card p-4 mb-6">
+                        <h3 class="text-sm font-semibold text-slate-300 mb-3">多次回测指标对比</h3>
+                        <div id="compare-chart" style="height: 400px;"></div>
+                    </div>
+                    <div class="card p-4">
+                        <h3 class="text-sm font-semibold text-slate-300 mb-3">回测记录汇总</h3>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-sm">
+                                <thead>
+                                    <tr class="text-left text-slate-400 border-b border-slate-700">
+                                        <th class="pb-2 pr-4">时间</th>
+                                        <th class="pb-2 pr-4">股票池</th>
+                                        <th class="pb-2 pr-4">基准</th>
+                                        <th class="pb-2 pr-4 text-right">总收益率</th>
+                                        <th class="pb-2 pr-4 text-right">年化收益率</th>
+                                        <th class="pb-2 pr-4 text-right">夏普比率</th>
+                                        <th class="pb-2 pr-4 text-right">最大回撤</th>
+                                        <th class="pb-2 pr-4 text-right">交易天数</th>
+                                        <th class="pb-2 text-right">初始资金</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr v-for="run in runs" :key="run.run_id"
+                                        class="border-b border-slate-800 hover:bg-slate-800/50 cursor-pointer"
+                                        @click="selectRun(run.run_id); activeTab = 'detail'">
+                                        <td class="py-2 pr-4 text-slate-300">{{ formatTimestamp(run.timestamp) }}</td>
+                                        <td class="py-2 pr-4 text-slate-300 text-xs">{{ run.pool || '-' }}</td>
+                                        <td class="py-2 pr-4 text-slate-300 text-xs">{{ run.benchmark ? benchmarkDisplayName(run.benchmark) : '-' }}</td>
+                                        <td class="py-2 pr-4 text-right font-mono"
+                                            :class="run.total_return_pct >= 0 ? 'positive' : 'negative'">
+                                            {{ formatPercent(run.total_return_pct) }}
+                                        </td>
+                                        <td class="py-2 pr-4 text-right font-mono"
+                                            :class="run.annual_return_pct >= 0 ? 'positive' : 'negative'">
+                                            {{ formatPercent(run.annual_return_pct) }}
+                                        </td>
+                                        <td class="py-2 pr-4 text-right font-mono"
+                                            :class="run.sharpe_ratio >= 0 ? 'positive' : 'negative'">
+                                            {{ formatNum(run.sharpe_ratio) }}
+                                        </td>
+                                        <td class="py-2 pr-4 text-right font-mono negative">{{ formatPercent(run.max_drawdown_pct) }}</td>
+                                        <td class="py-2 pr-4 text-right font-mono text-slate-300">{{ run.total_trading_days }}</td>
+                                        <td class="py-2 text-right font-mono text-slate-300">{{ formatMoney(run.initial_capital) }}</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <div v-if="activeTab === 'log'" class="card p-6 mb-6 fade-in">
+                    <div class="flex items-center justify-between mb-4">
+                        <h3 class="text-sm font-semibold text-slate-300">运行日志</h3>
+                        <div class="flex items-center gap-3">
+                            <span v-if="logFile" class="text-xs text-slate-500">{{ logFile }}</span>
+                            <span v-if="logTotalLines > 0" class="text-xs text-slate-500">
+                                {{ Math.min(logOffset, logTotalLines) }} / {{ logTotalLines }} 行
+                            </span>
+                            <button v-if="logLines.length > 0" @click="copyLog"
+                                    class="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
+                                    :class="logCopied ? 'bg-green-600 text-white' : 'bg-slate-600 text-slate-300 hover:bg-slate-500'">
+                                {{ logCopied ? '已复制' : '复制日志' }}
+                            </button>
+                        </div>
+                    </div>
+                    <div v-if="logLoading && logLines.length === 0" class="text-center py-8">
+                        <div class="pulse text-slate-400">加载日志中...</div>
+                    </div>
+                    <div v-else-if="logLines.length > 0">
+                        <div id="log-content-box" class="log-content" @scroll="handleLogScroll">
+                            <span v-for="(line, i) in logLines" :key="i"
+                                  :style="{ color: logLineColor(line) }">{{ line + '\n' }}</span>
+                        </div>
+                        <div v-if="logLoading" class="text-center py-2 text-xs text-slate-500 mt-2">
+                            <div class="pulse">加载更多...</div>
+                        </div>
+                        <div v-else-if="logOffset >= logTotalLines && logTotalLines > 0" class="text-center py-2 text-xs text-slate-600 mt-2">
+                            已加载全部日志
+                        </div>
+                    </div>
+                    <div v-else class="text-center py-8 text-slate-500">
+                        <svg class="w-10 h-10 mx-auto mb-3 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                        </svg>
+                        <p>未找到对应的日志记录</p>
+                        <p class="text-xs mt-1">该回测记录未关联日志文件</p>
+                    </div>
+                </div>
+
+            </div>
+            </template>
+        </main>
+    </div>
+</div>
+
+<script>
+const { createApp, ref, computed, watch, onMounted, nextTick } = Vue;
+
+createApp({
+    setup() {
+        const strategies = ref([]);
+        const selectedStrategy = ref(null);
+        const runs = ref([]);
+        const selectedRunId = ref(null);
+        const currentRun = ref(null);
+        const loading = ref(true);
+        const activeTab = ref('detail');
+        const tradePage = ref(1);
+        const tradePageSize = 50;
+        const strategyReadme = ref('');
+        const strategyCode = ref('');
+        const codeCopied = ref(false);
+        const editingName = ref(null);
+        const editNameValue = ref('');
+        const collapsedAll = ref(false);
+        const collapsedStandard = ref(false);
+        const sidebarView = ref('strategy');
+        const sidebarOpen = ref(true);
+        const selectedRuns = ref([]);
+        const logFile = ref('');
+        const logLoading = ref(false);
+        const logCopied = ref(false);
+        const logLines = ref([]);
+        const logOffset = ref(0);
+        const logTotalLines = ref(0);
+        const LOG_BATCH = 500;
+        const cachePath = ref('');
+        const cacheParent = ref('');
+        const cacheEntries = ref([]);
+        const cacheLoading = ref(false);
+        const cacheViewData = ref(null);
+        const cacheOffset = ref(0);
+        const cacheAllRows = ref([]);
+        const CACHE_BATCH = 200;
+        const MAX_KEEP_ROWS = 500;
+        const CLEANUP_THRESHOLD = 300;
+        const ROW_HEIGHT = 28;
+        const cacheDateHierarchy = ref(null);
+        const selectedYear = ref('');
+        const selectedMonth = ref('');
+        const selectedDay = ref('');
+        const selectedDateFilter = ref('');
+
+        let equityChart = null;
+        let drawdownChart = null;
+        let compareChart = null;
+        const CHART_SYNC_GROUP = 'equity-drawdown-sync';
+
+        const BENCHMARK_NAME_MAP = {
+            '000300.SH': '沪深300',
+            '000016.SH': '上证50',
+            '000905.SH': '中证500',
+            '000852.SH': '中证1000',
+            '000001.SH': '上证指数',
+            '399001.SZ': '深证成指',
+            '399006.SZ': '创业板指',
+            '399101.SZ': '中小综指',
+            '000985.SH': '中证全指',
+        };
+
+        function benchmarkDisplayName(code) {
+            if (!code) return '';
+            return BENCHMARK_NAME_MAP[code] || code;
+        }
+
+        const totalTradePages = computed(() => {
+            if (!currentRun.value?.trade_log) return 1;
+            return Math.ceil(currentRun.value.trade_log.length / tradePageSize);
+        });
+
+        const paginatedTrades = computed(() => {
+            if (!currentRun.value?.trade_log) return [];
+            const start = (tradePage.value - 1) * tradePageSize;
+            return currentRun.value.trade_log.slice(start, start + tradePageSize);
+        });
+
+        const visibleTradePages = computed(() => {
+            const total = totalTradePages.value;
+            const current = tradePage.value;
+            if (total <= 7) {
+                return Array.from({ length: total }, (_, i) => i + 1);
+            }
+            if (current <= 4) {
+                return [1, 2, 3, 4, 5, '...', total];
+            }
+            if (current >= total - 3) {
+                return [1, '...', total - 4, total - 3, total - 2, total - 1, total];
+            }
+            return [1, '...', current - 1, current, current + 1, '...', total];
+        });
+
+        const standardStrategies = computed(() => strategies.value);
+
+        const currentStrategyDisplayName = computed(() => {
+            const s = strategies.value.find(s => s.name === selectedStrategy.value);
+            return s?.display_name || formatStrategyName(selectedStrategy.value);
+        });
+
+        const logLineColor = (line) => {
+            const upper = line.toUpperCase();
+            if (upper.includes(' - ERROR - ') || upper.includes(' - CRITICAL - ') || upper.includes(' - FATAL - ')) return '#ef4444';
+            if (upper.includes(' - WARNING - ') || upper.includes(' - WARN - ')) return '#f59e0b';
+            if (upper.includes(' - DEBUG - ')) return '#38bdf8';
+            if (upper.includes(' - INFO - ')) return '#a3e635';
+            return '#cbd5e1';
+        }
+
+        function formatStrategyName(name) {
+            return name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+        }
+
+        function formatTimestamp(ts) {
+            if (!ts) return '-';
+            return ts.replace('T', ' ').substring(0, 19);
+        }
+
+        function formatDateFromValue(val) {
+            if (val == null) return '-';
+            const d = new Date(val);
+            if (isNaN(d.getTime())) return String(val);
+            const y = d.getFullYear();
+            const m = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            return y + '-' + m + '-' + day;
+        }
+
+        function makeTimeLabelFormatter(chartInstance) {
+            return function(val) {
+                const d = new Date(val);
+                if (isNaN(d.getTime())) return '';
+                const y = d.getFullYear();
+                const m = String(d.getMonth() + 1).padStart(2, '0');
+                const day = String(d.getDate()).padStart(2, '0');
+                let rangeRatio = 1;
+                try {
+                    const opt = chartInstance.getOption();
+                    const dz = (opt.dataZoom && opt.dataZoom[0]) || {};
+                    const startPct = dz.start != null ? dz.start : 0;
+                    const endPct = dz.end != null ? dz.end : 100;
+                    rangeRatio = Math.max(0.001, (endPct - startPct) / 100);
+                } catch (e) {}
+                if (rangeRatio > 0.5) return String(y);
+                if (rangeRatio > 0.15) return y + '-' + m;
+                return y + '-' + m + '-' + day;
+            };
+        }
+
+        function formatPercent(val) {
+            if (val == null) return '-';
+            return (val >= 0 ? '+' : '') + val.toFixed(2) + '%';
+        }
+
+        function formatNum(val) {
+            if (val == null) return '-';
+            return Number(val).toFixed(4);
+        }
+
+        function formatMoney(val) {
+            if (val == null) return '-';
+            if (val >= 1e8) return (val / 1e8).toFixed(2) + '亿';
+            if (val >= 1e4) return (val / 1e4).toFixed(2) + '万';
+            return val.toFixed(2);
+        }
+
+        function formatFileSize(bytes) {
+            if (bytes == null) return '-';
+            if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(1) + ' GB';
+            if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' MB';
+            if (bytes >= 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            return bytes + ' B';
+        }
+
+        function calcWinRate(metrics) {
+            if (!metrics || metrics.total_trading_days === 0) return '-';
+            const rate = (metrics.win_days / metrics.total_trading_days * 100).toFixed(1);
+            return rate + '%';
+        }
+
+        async function fetchStrategies() {
+            loading.value = true;
+            try {
+                const res = await fetch('/api/strategies');
+                strategies.value = await res.json();
+                if (strategies.value.length > 0 && !selectedStrategy.value) {
+                    selectStrategy(strategies.value[0].name);
+                }
+            } catch (e) {
+                console.error('Failed to fetch strategies:', e);
+            } finally {
+                loading.value = false;
+            }
+        }
+
+        async function loadReadme(name) {
+            try {
+                const res = await fetch(`/api/strategies/${name}/readme`);
+                const data = await res.json();
+                strategyReadme.value = data.content || '';
+                if (activeTab.value === 'readme' && strategyReadme.value) {
+                    await nextTick();
+                    const el = document.getElementById('readme-content');
+                    if (el) el.innerHTML = marked.parse(strategyReadme.value);
+                }
+            } catch (e) {
+                console.error('Failed to fetch readme:', e);
+                strategyReadme.value = '';
+            }
+        }
+
+        async function switchTab(tab) {
+            activeTab.value = tab;
+            if (tab === 'readme' && strategyReadme.value) {
+                await nextTick();
+                const el = document.getElementById('readme-content');
+                if (el) el.innerHTML = marked.parse(strategyReadme.value);
+            } else if (tab === 'code') {
+                strategyCode.value = currentRun.value?.strategy_code || '';
+            } else if (tab === 'log') {
+                loadLog();
+            }
+        }
+
+        async function copyCode() {
+            if (!strategyCode.value) return;
+            try {
+                await navigator.clipboard.writeText(strategyCode.value);
+                codeCopied.value = true;
+                setTimeout(() => { codeCopied.value = false; }, 2000);
+            } catch (e) {
+                console.error('Failed to copy code:', e);
+            }
+        }
+
+        async function startEditName(strategy) {
+            editingName.value = strategy.name;
+            editNameValue.value = strategy.display_name || formatStrategyName(strategy.name);
+            await nextTick();
+            const inputs = document.querySelectorAll('input[ref="editNameInput"]');
+            // Find the visible input
+            const input = document.querySelector('.strategy-item input.border-blue-500');
+            if (input) input.focus();
+        }
+
+        async function saveEditName(strategy) {
+            if (editingName.value !== strategy.name) return;
+            const newName = editNameValue.value.trim();
+            if (newName && newName !== strategy.display_name) {
+                try {
+                    await fetch(`/api/strategies/${strategy.name}/display_name`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ display_name: newName }),
+                    });
+                    strategy.display_name = newName;
+                } catch (e) {
+                    console.error('Failed to update display name:', e);
+                }
+            }
+            editingName.value = null;
+        }
+
+        function cancelEditName() {
+            editingName.value = null;
+        }
+
+        async function selectStrategy(name) {
+            selectedStrategy.value = name;
+            selectedRunId.value = null;
+            currentRun.value = null;
+            activeTab.value = 'detail';
+            strategyReadme.value = '';
+            strategyCode.value = '';
+            selectedRuns.value = [];
+            logLines.value = [];
+            logOffset.value = 0;
+            logTotalLines.value = 0;
+            logFile.value = '';
+            try {
+                const res = await fetch(`/api/strategies/${name}/runs`);
+                runs.value = await res.json();
+                if (runs.value.length > 0) {
+                    selectRun(runs.value[0].run_id);
+                }
+            } catch (e) {
+                console.error('Failed to fetch runs:', e);
+                runs.value = [];
+            }
+            loadReadme(name);
+        }
+
+        async function selectRun(runId) {
+            selectedRunId.value = runId;
+            tradePage.value = 1;
+            try {
+                const res = await fetch(`/api/strategies/${selectedStrategy.value}/runs/${runId}`);
+                currentRun.value = await res.json();
+                await nextTick();
+                if (activeTab.value === 'detail') {
+                    renderEquityChart();
+                    renderDrawdownChart();
+                } else if (activeTab.value === 'compare') {
+                    renderCompareChart();
+                } else if (activeTab.value === 'log') {
+                    loadLog();
+                }
+            } catch (e) {
+                console.error('Failed to fetch run detail:', e);
+                currentRun.value = null;
+            }
+        }
+
+        async function deleteRun(runId) {
+            if (!confirm('确定要删除这条回测记录吗？\n删除后无法恢复。')) return;
+            try {
+                const res = await fetch(`/api/strategies/${selectedStrategy.value}/runs/${runId}`, {
+                    method: 'DELETE',
+                });
+                const data = await res.json();
+                if (data.success) {
+                    runs.value = runs.value.filter(r => r.run_id !== runId);
+                    selectedRuns.value = selectedRuns.value.filter(id => id !== runId);
+                    if (selectedRunId.value === runId) {
+                        selectedRunId.value = null;
+                        currentRun.value = null;
+                        if (runs.value.length > 0) {
+                            selectRun(runs.value[0].run_id);
+                        }
+                    }
+                    if (activeTab.value === 'compare') {
+                        await nextTick();
+                        renderCompareChart();
+                    }
+                    const strategy = strategies.value.find(s => s.name === selectedStrategy.value);
+                    if (strategy) strategy.run_count = runs.value.length;
+                } else {
+                    alert('删除失败: ' + (data.error || '未知错误'));
+                }
+            } catch (e) {
+                console.error('Failed to delete run:', e);
+                alert('删除失败');
+            }
+        }
+
+        function toggleRunSelection(runId) {
+            const idx = selectedRuns.value.indexOf(runId);
+            if (idx >= 0) {
+                selectedRuns.value.splice(idx, 1);
+            } else {
+                selectedRuns.value.push(runId);
+            }
+        }
+
+        function toggleSelectAllRuns() {
+            if (selectedRuns.value.length === runs.value.length) {
+                selectedRuns.value = [];
+            } else {
+                selectedRuns.value = runs.value.map(r => r.run_id);
+            }
+        }
+
+        async function batchDeleteRuns() {
+            if (selectedRuns.value.length === 0) return;
+            if (!confirm(`确定要删除选中的 ${selectedRuns.value.length} 条回测记录吗？\n将同时删除对应的日志文件，删除后无法恢复。`)) return;
+            try {
+                const res = await fetch(`/api/strategies/${selectedStrategy.value}/runs/batch_delete`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ run_ids: selectedRuns.value }),
+                });
+                const data = await res.json();
+                const deletedSet = new Set(data.deleted || []);
+                runs.value = runs.value.filter(r => !deletedSet.has(r.run_id));
+                selectedRuns.value = [];
+                if (deletedSet.has(selectedRunId.value)) {
+                    selectedRunId.value = null;
+                    currentRun.value = null;
+                    if (runs.value.length > 0) {
+                        selectRun(runs.value[0].run_id);
+                    }
+                }
+                if (activeTab.value === 'compare') {
+                    await nextTick();
+                    renderCompareChart();
+                }
+                const strategy = strategies.value.find(s => s.name === selectedStrategy.value);
+                if (strategy) strategy.run_count = runs.value.length;
+                if (data.errors && data.errors.length > 0) {
+                    alert(`部分删除失败: ${data.errors.map(e => e.run_id).join(', ')}`);
+                }
+            } catch (e) {
+                console.error('Failed to batch delete runs:', e);
+                alert('批量删除失败');
+            }
+        }
+
+        async function loadLog() {
+            if (!selectedRunId.value || !selectedStrategy.value) return;
+            logLoading.value = true;
+            logLines.value = [];
+            logOffset.value = 0;
+            logTotalLines.value = 0;
+            logFile.value = '';
+            try {
+                const res = await fetch(`/api/logs/${encodeURIComponent(selectedStrategy.value)}/${encodeURIComponent(selectedRunId.value)}?offset=0&limit=${LOG_BATCH}`);
+                const data = await res.json();
+                logFile.value = data.file || '';
+                logTotalLines.value = data.total_lines || 0;
+                if (data.content) {
+                    const lines = data.content.split('\n');
+                    if (lines.length > 0 && lines[lines.length - 1] === '') {
+                        lines.pop();
+                    }
+                    logLines.value = lines;
+                    logOffset.value = lines.length;
+                }
+                await nextTick();
+                const el = document.getElementById('log-content-box');
+                if (el) el.scrollTop = 0;
+            } catch (e) {
+                console.error('Failed to load log:', e);
+            } finally {
+                logLoading.value = false;
+            }
+        }
+
+        async function loadMoreLog() {
+            if (!selectedRunId.value || !selectedStrategy.value) return;
+            if (logLoading.value) return;
+            if (logOffset.value >= logTotalLines.value) return;
+            logLoading.value = true;
+            try {
+                const res = await fetch(`/api/logs/${encodeURIComponent(selectedStrategy.value)}/${encodeURIComponent(selectedRunId.value)}?offset=${logOffset.value}&limit=${LOG_BATCH}`);
+                const data = await res.json();
+                if (data.content) {
+                    const lines = data.content.split('\n');
+                    if (lines.length > 0 && lines[lines.length - 1] === '') {
+                        lines.pop();
+                    }
+                    logLines.value = [...logLines.value, ...lines];
+                    logOffset.value += lines.length;
+                }
+            } catch (e) {
+                console.error('Failed to load more log:', e);
+            } finally {
+                logLoading.value = false;
+            }
+        }
+
+        function handleLogScroll() {
+            const el = document.getElementById('log-content-box');
+            if (!el || logLoading.value) return;
+            if (logOffset.value >= logTotalLines.value) return;
+            const scrollBottom = el.scrollTop + el.clientHeight;
+            if (scrollBottom >= el.scrollHeight - 80) {
+                loadMoreLog();
+            }
+        }
+
+        async function copyLog() {
+            if (!logLines.value.length) return;
+            try {
+                await navigator.clipboard.writeText(logLines.value.join('\n'));
+                logCopied.value = true;
+                setTimeout(() => { logCopied.value = false; }, 2000);
+            } catch (e) {
+                console.error('Failed to copy log:', e);
+            }
+        }
+
+        async function browseCache(path) {
+            cacheLoading.value = true;
+            cacheViewData.value = null;
+            try {
+                const res = await fetch(`/api/cache/browse?path=${encodeURIComponent(path)}`);
+                const data = await res.json();
+                if (data.error) {
+                    alert(data.error);
+                    cacheLoading.value = false;
+                    return;
+                }
+                cachePath.value = data.path || '';
+                cacheParent.value = data.parent || '';
+                cacheEntries.value = data.entries || [];
+            } catch (e) {
+                console.error('Failed to browse cache:', e);
+            } finally {
+                cacheLoading.value = false;
+            }
+        }
+
+        async function viewCacheFile(path) {
+            cacheOffset.value = 0;
+            cacheAllRows.value = [];
+            cacheLoading.value = true;
+            selectedYear.value = '';
+            selectedMonth.value = '';
+            selectedDay.value = '';
+            selectedDateFilter.value = '';
+            try {
+                const res = await fetch(`/api/cache/view?path=${encodeURIComponent(path)}&offset=0&limit=${CACHE_BATCH}`);
+                const data = await res.json();
+                if (data.error) {
+                    alert('读取失败: ' + data.error);
+                    cacheLoading.value = false;
+                    return;
+                }
+                cacheViewData.value = data;
+                cacheOffset.value = (data.head || []).length;
+                cacheAllRows.value = data.head || [];
+                fetchCacheDates(path);
+                cacheLoading.value = false;
+                await nextTick();
+                const el = document.getElementById('cache-table-body');
+                if (el) {
+                    el.onscroll = handleCacheScroll;
+                }
+            } catch (e) {
+                console.error('Failed to view cache file:', e);
+                alert('读取失败');
+                cacheLoading.value = false;
+            }
+        }
+
+        async function fetchCacheDates(path) {
+            try {
+                const res = await fetch(`/api/cache/dates?path=${encodeURIComponent(path)}`);
+                const data = await res.json();
+                if (!data.error) {
+                    cacheDateHierarchy.value = data;
+                } else {
+                    cacheDateHierarchy.value = null;
+                }
+            } catch (e) {
+                cacheDateHierarchy.value = null;
+            }
+        }
+
+        async function loadMoreCacheData() {
+            if (!cacheViewData.value) return;
+            const total = cacheViewData.value.total || 0;
+            if (cacheOffset.value >= total) return;
+            cacheLoading.value = true;
+            try {
+                let url = `/api/cache/view?path=${encodeURIComponent(cacheViewData.value.path)}&offset=${cacheOffset.value}&limit=${CACHE_BATCH}`;
+                if (selectedDateFilter.value) {
+                    url += `&date=${selectedDateFilter.value}`;
+                }
+                const res = await fetch(url);
+                const data = await res.json();
+                if (data.error || !data.head) {
+                    cacheLoading.value = false;
+                    return;
+                }
+                cacheAllRows.value = [...cacheAllRows.value, ...data.head];
+                cacheOffset.value += data.head.length;
+                if (cacheAllRows.value.length > MAX_KEEP_ROWS) {
+                    const removed = cacheAllRows.value.splice(0, CLEANUP_THRESHOLD);
+                    cacheOffset.value -= removed.length;
+                    const el = document.getElementById('cache-table-body');
+                    if (el) {
+                        el.scrollTop -= CLEANUP_THRESHOLD * ROW_HEIGHT;
+                    }
+                }
+            } catch (e) {
+                console.error('Failed to load more data:', e);
+            } finally {
+                cacheLoading.value = false;
+            }
+        }
+
+        function applyDateFilter() {
+            if (!cacheViewData.value) return;
+            if (selectedDay.value) {
+                selectedDateFilter.value = `${selectedYear.value}-${selectedMonth.value}-${selectedDay.value}`;
+            } else if (selectedMonth.value) {
+                selectedDateFilter.value = `${selectedYear.value}-${selectedMonth.value}`;
+            } else if (selectedYear.value) {
+                selectedDateFilter.value = selectedYear.value;
+            } else {
+                selectedDateFilter.value = '';
+            }
+            cacheOffset.value = 0;
+            cacheAllRows.value = [];
+            cacheLoading.value = true;
+            fetch(`/api/cache/view?path=${encodeURIComponent(cacheViewData.value.path)}&offset=0&limit=${CACHE_BATCH}${selectedDateFilter.value ? '&date=' + selectedDateFilter.value : ''}`)
+                .then(res => res.json())
+                .then(data => {
+                    if (data.error) {
+                        alert('筛选失败: ' + data.error);
+                    } else {
+                        cacheViewData.value = data;
+                        cacheOffset.value = (data.head || []).length;
+                        cacheAllRows.value = data.head || [];
+                        nextTick(() => {
+                            const el = document.getElementById('cache-table-body');
+                            if (el) el.scrollTop = 0;
+                        });
+                    }
+                })
+                .catch(e => console.error('Failed to apply date filter:', e))
+                .finally(() => { cacheLoading.value = false; });
+        }
+
+        function handleCacheScroll() {
+            const el = document.getElementById('cache-table-body');
+            if (!el || cacheLoading.value) return;
+            const total = cacheViewData.value?.total || 0;
+            if (cacheOffset.value >= total) return;
+            const scrollBottom = el.scrollTop + el.clientHeight;
+            if (scrollBottom >= el.scrollHeight - 100) {
+                loadMoreCacheData();
+            }
+        }
+
+        function renderEquityChart() {
+            if (!currentRun.value) return;
+            const el = document.getElementById('equity-chart');
+            if (!el) return;
+            if (equityChart && equityChart.getDom() !== el) {
+                equityChart.dispose();
+                equityChart = null;
+            }
+            if (!equityChart) {
+                equityChart = echarts.init(el, 'dark');
+                equityChart.group = CHART_SYNC_GROUP;
+            }
+            const ec = currentRun.value.equity_curve || [];
+            const bc = currentRun.value.benchmark_curve || [];
+
+            const initialCapital = currentRun.value.metrics?.initial_capital || 1;
+
+            const ecStartDate = ec.length > 0 ? ec[0].date : null;
+            const ecEndDate = ec.length > 0 ? ec[ec.length - 1].date : null;
+
+            const bcFiltered = ecStartDate ? bc.filter(d => d.date >= ecStartDate) : bc;
+            const bcDateSet = new Set(bcFiltered.map(d => d.date));
+
+            const ecFiltered = ec.filter(d => bcDateSet.has(d.date));
+            const ecBaseValue = ecFiltered.length > 0 ? ecFiltered[0].portfolio_value : initialCapital;
+            const portfolioData = ecFiltered
+                .map(d => [d.date, +(d.portfolio_value / ecBaseValue).toFixed(4)]);
+
+            const series = [
+                {
+                    name: '策略净值',
+                    type: 'line',
+                    data: portfolioData,
+                    smooth: true,
+                    lineStyle: { width: 2, color: '#3b82f6' },
+                    itemStyle: { color: '#3b82f6' },
+                    areaStyle: {
+                        color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                            { offset: 0, color: 'rgba(59,130,246,0.3)' },
+                            { offset: 1, color: 'rgba(59,130,246,0.02)' },
+                        ])
+                    },
+                },
+            ];
+
+            const benchmarkCode = currentRun.value.config?.benchmark || '';
+            const benchmarkLabel = benchmarkCode ? benchmarkDisplayName(benchmarkCode) + '净值' : '基准净值';
+
+            if (bcFiltered.length > 0) {
+                const baseClose = bcFiltered[0].close || 1;
+                const benchmarkData = bcFiltered.map(d => [d.date, +(d.close / baseClose).toFixed(4)]);
+                series.push({
+                    name: benchmarkLabel,
+                    type: 'line',
+                    data: benchmarkData,
+                    smooth: true,
+                    lineStyle: { width: 2, color: '#f59e0b', type: 'dashed' },
+                    itemStyle: { color: '#f59e0b' },
+                });
+
+                // 计算超额收益曲线 = 策略净值 / 基准净值
+                const bmMap = new Map();
+                benchmarkData.forEach(d => bmMap.set(d[0], d[1]));
+                const excessData = portfolioData
+                    .map(d => {
+                        const bmVal = bmMap.get(d[0]);
+                        if (bmVal !== undefined && bmVal > 0) {
+                            return [d[0], +(d[1] / bmVal).toFixed(4)];
+                        }
+                        return null;
+                    })
+                    .filter(d => d !== null);
+
+                if (excessData.length > 0) {
+                    series.push({
+                        name: '超额收益',
+                        type: 'line',
+                        data: excessData,
+                        smooth: true,
+                        lineStyle: { width: 2, color: '#10b981' },
+                        itemStyle: { color: '#10b981' },
+                        areaStyle: {
+                            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                                { offset: 0, color: 'rgba(16,185,129,0.15)' },
+                                { offset: 1, color: 'rgba(16,185,129,0.02)' },
+                            ])
+                        },
+                    });
+                }
+            }
+
+            equityChart.setOption({
+                backgroundColor: 'transparent',
+                tooltip: {
+                    trigger: 'axis',
+                    backgroundColor: '#1e293b',
+                    borderColor: '#334155',
+                    textStyle: { color: '#e2e8f0', fontSize: 12 },
+                    formatter: function(params) {
+                        const dateStr = formatDateFromValue(params[0].value[0]);
+                        let html = '<div style="font-weight:600;margin-bottom:4px">' + dateStr + '</div>';
+                        params.forEach(p => {
+                            html += '<div>' + p.marker + ' ' + p.seriesName + ': <b>' + Number(p.value[1]).toFixed(4) + '</b></div>';
+                        });
+                        return html;
+                    }
+                },
+                legend: {
+                    data: ['策略净值', benchmarkLabel, '超额收益'],
+                    top: 0,
+                    textStyle: { color: '#94a3b8' },
+                },
+                grid: { left: 60, right: 30, top: 40, bottom: 30 },
+                xAxis: {
+                    type: 'time',
+                    min: ecStartDate,
+                    max: ecEndDate,
+                    axisLine: { lineStyle: { color: '#334155' } },
+                    axisLabel: { color: '#64748b', fontSize: 10, formatter: makeTimeLabelFormatter(equityChart) },
+                    splitLine: { show: false },
+                },
+                yAxis: {
+                    type: 'value',
+                    scale: true,
+                    axisLine: { lineStyle: { color: '#334155' } },
+                    axisLabel: { color: '#64748b', fontSize: 10 },
+                    splitLine: { lineStyle: { color: '#1e293b' } },
+                },
+                series: series,
+                dataZoom: [
+                    { type: 'inside', start: 0, end: 100 },
+                ],
+            }, true);
+        }
+
+        function renderDrawdownChart() {
+            if (!currentRun.value) return;
+            const el = document.getElementById('drawdown-chart');
+            if (!el) return;
+            if (drawdownChart && drawdownChart.getDom() !== el) {
+                drawdownChart.dispose();
+                drawdownChart = null;
+            }
+            if (!drawdownChart) {
+                drawdownChart = echarts.init(el, 'dark');
+                drawdownChart.group = CHART_SYNC_GROUP;
+            }
+            const ec = currentRun.value.equity_curve || [];
+            if (ec.length === 0) return;
+
+            const values = ec.map(d => d.portfolio_value);
+            const drawdownData = [];
+            let peak = values[0];
+            for (let i = 0; i < values.length; i++) {
+                if (values[i] > peak) peak = values[i];
+                drawdownData.push([ec[i].date, +((values[i] - peak) / peak * 100).toFixed(2)]);
+            }
+
+            drawdownChart.setOption({
+                backgroundColor: 'transparent',
+                tooltip: {
+                    trigger: 'axis',
+                    backgroundColor: '#1e293b',
+                    borderColor: '#334155',
+                    textStyle: { color: '#e2e8f0', fontSize: 12 },
+                    formatter: function(params) {
+                        const dateStr = formatDateFromValue(params[0].value[0]);
+                        return '<div style="font-weight:600;margin-bottom:4px">' + dateStr + '</div>' +
+                               '<div>' + params[0].marker + ' 回撤: <b style="color:#f87171">' + params[0].value[1] + '%</b></div>';
+                    }
+                },
+                grid: { left: 60, right: 30, top: 20, bottom: 30 },
+                xAxis: {
+                    type: 'time',
+                    axisLine: { lineStyle: { color: '#334155' } },
+                    axisLabel: { color: '#64748b', fontSize: 10, formatter: makeTimeLabelFormatter(drawdownChart) },
+                    splitLine: { show: false },
+                },
+                yAxis: {
+                    type: 'value',
+                    axisLine: { lineStyle: { color: '#334155' } },
+                    axisLabel: { color: '#64748b', fontSize: 10, formatter: v => v + '%' },
+                    splitLine: { lineStyle: { color: '#1e293b' } },
+                },
+                series: [{
+                    type: 'line',
+                    data: drawdownData,
+                    lineStyle: { width: 1.5, color: '#f87171' },
+                    itemStyle: { color: '#f87171' },
+                    areaStyle: {
+                        color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                            { offset: 0, color: 'rgba(248,113,113,0.02)' },
+                            { offset: 1, color: 'rgba(248,113,113,0.3)' },
+                        ])
+                    },
+                    symbol: 'none',
+                }],
+                dataZoom: [{ type: 'inside', start: 0, end: 100 }],
+            }, true);
+
+            if (equityChart && drawdownChart) {
+                echarts.connect(CHART_SYNC_GROUP);
+            }
+        }
+
+        function renderCompareChart() {
+            if (!runs.value || runs.value.length === 0) return;
+            const el = document.getElementById('compare-chart');
+            if (!el) return;
+            if (compareChart && compareChart.getDom() !== el) {
+                compareChart.dispose();
+                compareChart = null;
+            }
+            if (!compareChart) {
+                compareChart = echarts.init(el, 'dark');
+            }
+
+            const labels = runs.value.map((r, i) => `${formatTimestamp(r.timestamp).substring(0, 19)}`);
+            const sharpeData = runs.value.map(r => r.sharpe_ratio);
+            const returnData = runs.value.map(r => r.total_return_pct);
+            const drawdownData = runs.value.map(r => r.max_drawdown_pct);
+
+            const sharpeMin = Math.min(...sharpeData, 0);
+            const sharpeMax = Math.max(...sharpeData, 0);
+            const pctValues = [...returnData, ...drawdownData];
+            const pctMin = Math.min(...pctValues, 0);
+            const pctMax = Math.max(...pctValues, 0);
+
+            const sharpeRange = sharpeMax - sharpeMin;
+            const pctRange = pctMax - pctMin;
+            let sharpeMinAlign = sharpeMin;
+            let sharpeMaxAlign = sharpeMax;
+            let pctMinAlign = pctMin;
+            let pctMaxAlign = pctMax;
+            if (sharpeRange > 0 && pctRange > 0) {
+                const sharpeZeroRatio = (0 - sharpeMin) / sharpeRange;
+                const pctZeroRatio = (0 - pctMin) / pctRange;
+                if (sharpeZeroRatio > pctZeroRatio) {
+                    const targetPctMin = 0 - pctMax * sharpeZeroRatio / (1 - sharpeZeroRatio);
+                    pctMinAlign = Math.min(pctMin, targetPctMin);
+                } else if (pctZeroRatio > sharpeZeroRatio) {
+                    const targetSharpeMin = 0 - sharpeMax * pctZeroRatio / (1 - pctZeroRatio);
+                    sharpeMinAlign = Math.min(sharpeMin, targetSharpeMin);
+                }
+            }
+
+            compareChart.setOption({
+                backgroundColor: 'transparent',
+                tooltip: {
+                    trigger: 'axis',
+                    backgroundColor: '#1e293b',
+                    borderColor: '#334155',
+                    textStyle: { color: '#e2e8f0', fontSize: 12 },
+                    formatter: function(params) {
+                        const idx = params[0].dataIndex;
+                        const run = runs.value[idx];
+                        let html = `<div style="font-weight:600;margin-bottom:4px">${formatTimestamp(run.timestamp)}</div>`;
+                        params.forEach(p => {
+                            const val = Number(p.value).toFixed(4);
+                            html += `<div>${p.marker} ${p.seriesName}: <b>${val}</b></div>`;
+                        });
+                        return html;
+                    }
+                },
+                legend: {
+                    data: ['夏普比率', '总收益率(%)', '最大回撤(%)'],
+                    top: 0,
+                    textStyle: { color: '#94a3b8' },
+                },
+                grid: { left: 60, right: 60, top: 40, bottom: 30 },
+                xAxis: {
+                    type: 'category',
+                    data: labels,
+                    axisLine: { lineStyle: { color: '#334155' } },
+                    axisLabel: { color: '#64748b', fontSize: 10, rotate: 30 },
+                },
+                yAxis: [
+                    {
+                        type: 'value',
+                        name: '夏普比率',
+                        min: sharpeMinAlign,
+                        max: sharpeMaxAlign,
+                        axisLine: { lineStyle: { color: '#334155' } },
+                        axisLabel: { color: '#64748b', fontSize: 10 },
+                        splitLine: { lineStyle: { color: '#1e293b' } },
+                    },
+                    {
+                        type: 'value',
+                        name: '%',
+                        min: pctMinAlign,
+                        max: pctMaxAlign,
+                        axisLine: { lineStyle: { color: '#334155' } },
+                        axisLabel: { color: '#64748b', fontSize: 10 },
+                        splitLine: { show: false },
+                    },
+                ],
+                series: [
+                    {
+                        name: '夏普比率',
+                        type: 'bar',
+                        yAxisIndex: 0,
+                        data: sharpeData,
+                        itemStyle: { color: '#3b82f6', borderRadius: [4, 4, 0, 0] },
+                    },
+                    {
+                        name: '总收益率(%)',
+                        type: 'bar',
+                        yAxisIndex: 1,
+                        data: returnData,
+                        itemStyle: { color: '#34d399', borderRadius: [4, 4, 0, 0] },
+                    },
+                    {
+                        name: '最大回撤(%)',
+                        type: 'bar',
+                        yAxisIndex: 1,
+                        data: drawdownData,
+                        itemStyle: { color: '#f87171', borderRadius: [4, 4, 0, 0] },
+                    },
+                ],
+            }, true);
+        }
+
+        watch(activeTab, async (tab) => {
+            if (tab === 'compare') {
+                await nextTick();
+                renderCompareChart();
+            } else if (tab === 'detail') {
+                await nextTick();
+                renderEquityChart();
+                renderDrawdownChart();
+            } else if (tab === 'readme' && strategyReadme.value) {
+                await nextTick();
+                const el = document.getElementById('readme-content');
+                if (el) el.innerHTML = marked.parse(strategyReadme.value);
+            } else if (tab === 'code') {
+                strategyCode.value = currentRun.value?.strategy_code || '';
+            } else if (tab === 'log') {
+                loadLog();
+            }
+        });
+
+        onMounted(() => {
+            fetchStrategies();
+            const resizeCharts = () => {
+                equityChart?.resize();
+                drawdownChart?.resize();
+                compareChart?.resize();
+            };
+            window.addEventListener('resize', resizeCharts);
+            // Also resize after sidebar open/close transition
+            watch(sidebarOpen, () => {
+                setTimeout(resizeCharts, 320);
+            });
+        });
+
+        return {
+            strategies, selectedStrategy, runs, selectedRunId, currentRun,
+            loading, activeTab, tradePage, tradePageSize, totalTradePages, paginatedTrades, visibleTradePages,
+            strategyReadme,
+            strategyCode, codeCopied,
+            standardStrategies, currentStrategyDisplayName,
+            editingName, editNameValue,
+            collapsedAll, collapsedStandard, sidebarView, sidebarOpen,
+            selectedRuns,
+            logFile, logLoading, logCopied, logLines, logOffset, logTotalLines, logLineColor,
+            cachePath, cacheParent, cacheEntries, cacheLoading, cacheViewData, cacheAllRows,
+            cacheDateHierarchy, selectedYear, selectedMonth, selectedDay, selectedDateFilter,
+            formatStrategyName, formatTimestamp, formatPercent, formatNum, formatMoney, formatFileSize,
+            calcWinRate, selectStrategy, selectRun, deleteRun, switchTab, copyCode,
+            startEditName, saveEditName, cancelEditName, benchmarkDisplayName,
+            toggleRunSelection, toggleSelectAllRuns, batchDeleteRuns,
+            loadLog, copyLog, handleLogScroll,
+            browseCache, viewCacheFile, loadMoreCacheData, handleCacheScroll, fetchCacheDates, applyDateFilter,
+        };
+    }
+}).mount('#app');
+</script>
+</body>
+</html>

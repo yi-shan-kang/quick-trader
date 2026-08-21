@@ -1,0 +1,3499 @@
+import sys
+import bisect
+import datetime as dt_module
+import numpy as np
+import pandas as pd
+from collections import deque, defaultdict, OrderedDict
+from typing import Optional, Any
+
+try:
+    import pyqtgraph as pg
+except ImportError:
+    import types
+    pg = types.ModuleType('pyqtgraph')
+    pg.LegendItem = object
+    pg.GraphicsObject = object
+    pg.AxisItem = object
+    pg.PlotWidget = object
+    pg.ViewBox = object
+    pg.PlotCurveItem = object
+    pg.ScatterPlotItem = object
+    pg.BarGraphItem = object
+    pg.InfiniteLine = object
+    pg.TextItem = object
+    pg.mkPen = lambda *a, **kw: None
+    pg.mkBrush = lambda *a, **kw: None
+    pg.mkColor = lambda *a, **kw: None
+
+try:
+    from PyQt5.QtWidgets import (
+    QApplication,
+    QMainWindow,
+    QWidget,
+    QGridLayout,
+    QLabel,
+    QSpacerItem,
+    QSizePolicy,
+    QVBoxLayout,
+    QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
+    QHeaderView,
+    QFrame,
+    QGraphicsView,
+    QCheckBox,
+    QHBoxLayout,
+    QPushButton,
+    QMessageBox,
+    QMenu,
+    QAction,
+    QLineEdit,
+    QWidgetAction,
+    QTextEdit,
+    QScrollArea,
+)
+except ImportError:
+    QApplication = None
+    QMainWindow = object
+    QWidget = object
+    QGridLayout = object
+    QLabel = object
+    QSpacerItem = object
+    QSizePolicy = object
+    QVBoxLayout = object
+    QTabWidget = object
+    QTableWidget = object
+    QTableWidgetItem = object
+    QHeaderView = object
+    QFrame = object
+    QGraphicsView = object
+    QCheckBox = object
+    QHBoxLayout = object
+    QPushButton = object
+    QMessageBox = object
+    QMenu = object
+    QAction = object
+    QLineEdit = object
+    QWidgetAction = object
+    QTextEdit = object
+    QScrollArea = object
+
+try:
+    from PyQt5.QtGui import QFont, QColor, QPainter, QPicture, QBrush, QPen, QPolygonF
+    from PyQt5.QtCore import Qt, QPointF, QRectF
+except ImportError:
+    QFont = object
+    QColor = object
+    QPainter = object
+    QPicture = object
+    QBrush = object
+    QPen = object
+    QPolygonF = object
+    Qt = None
+    QPointF = object
+    QRectF = object
+
+from typing import Callable
+
+from core.models import BacktestingResult
+
+_ai_mode = False
+
+
+def set_ai_mode(enabled: bool):
+    global _ai_mode
+    _ai_mode = enabled
+
+
+def is_ai_mode() -> bool:
+    return _ai_mode
+
+
+class FilterButton(QPushButton):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._active = False
+        self.setFixedSize(16, 16)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setStyleSheet("QPushButton { border: none; background: transparent; }")
+
+    def set_active(self, active):
+        self._active = active
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        color = QColor("#d14545") if self._active else QColor("#999999")
+        if self._active:
+            p.setBrush(QBrush(color))
+        else:
+            p.setBrush(QBrush(color))
+        p.setPen(Qt.NoPen)
+        w, h = self.width(), self.height()
+        funnel = [
+            QPointF(w * 0.1, h * 0.1),
+            QPointF(w * 0.9, h * 0.1),
+            QPointF(w * 0.55, h * 0.55),
+            QPointF(w * 0.55, h * 0.9),
+            QPointF(w * 0.45, h * 0.9),
+            QPointF(w * 0.45, h * 0.55),
+        ]
+        p.drawPolygon(QPolygonF(funnel))
+        p.end()
+
+
+class FilterPopup(QFrame):
+    """支持多选和确认的筛选弹出窗口"""
+
+    def __init__(self, values, current_filter, on_confirm, parent=None):
+        super().__init__(parent, Qt.Popup | Qt.FramelessWindowHint)
+        self.on_confirm = on_confirm
+        self._updating_select_all = False
+        self.setStyleSheet(
+            "QFrame { background-color: white; border: 1px solid #ccc; border-radius: 4px; }"
+        )
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(4)
+
+        # 搜索框
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("搜索...")
+        self.search_edit.setClearButtonEnabled(True)
+        self.search_edit.setStyleSheet("QLineEdit { padding: 4px; font-family: Microsoft YaHei; font-size: 12px; }")
+        layout.addWidget(self.search_edit)
+
+        # 确定按钮
+        confirm_btn = QPushButton("确定")
+        confirm_btn.setStyleSheet(
+            "QPushButton { background-color: #4CAF50; color: white; border: none; "
+            "border-radius: 3px; padding: 5px 10px; font-family: Microsoft YaHei; font-size: 12px; }"
+            "QPushButton:hover { background-color: #45a049; }"
+        )
+        confirm_btn.clicked.connect(self._on_confirm)
+        layout.addWidget(confirm_btn)
+
+        # 全选按钮
+        self.select_all_cb = QCheckBox("(全选)")
+        self.select_all_cb.setStyleSheet("font-family: Microsoft YaHei; font-size: 12px;")
+        layout.addWidget(self.select_all_cb)
+
+        # 滚动区域
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setMaximumHeight(250)
+        scroll.setStyleSheet("QScrollArea { border: none; }")
+        scroll_widget = QWidget()
+        self.item_layout = QVBoxLayout(scroll_widget)
+        self.item_layout.setContentsMargins(0, 0, 0, 0)
+        self.item_layout.setSpacing(2)
+
+        self.checkboxes = []
+        for val in values:
+            cb = QCheckBox(val)
+            cb.setStyleSheet("font-family: Microsoft YaHei; font-size: 12px;")
+            if current_filter is None:
+                cb.setChecked(True)
+            else:
+                cb.setChecked(val in current_filter)
+            cb.stateChanged.connect(self._on_item_changed)
+            self.item_layout.addWidget(cb)
+            self.checkboxes.append(cb)
+
+        scroll.setWidget(scroll_widget)
+        layout.addWidget(scroll)
+
+        self.select_all_cb.setChecked(all(cb.isChecked() for cb in self.checkboxes))
+        self.select_all_cb.stateChanged.connect(self._toggle_all)
+        self.search_edit.textChanged.connect(self._filter_search)
+
+        self.setFixedWidth(220)
+
+    def _toggle_all(self, state):
+        if self._updating_select_all:
+            return
+        checked = state == Qt.Checked
+        self._updating_select_all = True
+        for cb in self.checkboxes:
+            if cb.isVisible():
+                cb.setChecked(checked)
+        self._updating_select_all = False
+
+    def _on_item_changed(self):
+        if self._updating_select_all:
+            return
+        self._update_select_all_state()
+
+    def _update_select_all_state(self):
+        visible_cbs = [cb for cb in self.checkboxes if cb.isVisible()]
+        if not visible_cbs:
+            return
+        all_vis_checked = all(cb.isChecked() for cb in visible_cbs)
+        self._updating_select_all = True
+        self.select_all_cb.setChecked(all_vis_checked)
+        self._updating_select_all = False
+
+    def _filter_search(self, text):
+        lower = text.lower()
+        for cb in self.checkboxes:
+            cb.setVisible(lower in cb.text().lower())
+        self._update_select_all_state()
+
+    def _on_confirm(self):
+        selected = set()
+        for cb in self.checkboxes:
+            if cb.isChecked():
+                selected.add(cb.text())
+        all_checked = all(cb.isChecked() for cb in self.checkboxes)
+        self.hide()
+        self.on_confirm(selected, all_checked)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            self.hide()
+        else:
+            super().keyPressEvent(event)
+
+
+class ClickableLegend(pg.LegendItem):
+    """支持点击隐藏/显示曲线的图例"""
+
+    def __init__(self, size=None, offset=None, **kwargs):
+        super().__init__(size=size, offset=offset, **kwargs)
+        self._curve_items = {}
+
+    def addItem(self, item, name):
+        super().addItem(item, name)
+        label = self.items[-1][1]
+        self._curve_items[label] = item
+        label.setAcceptHoverEvents(True)
+        label.setCursor(Qt.PointingHandCursor)
+        label.setToolTip("点击隐藏/显示")
+        label.mousePressEvent = lambda ev, lbl=label: self._toggle_curve(lbl)
+        label.hoverEvent = lambda ev, lbl=label: self._on_hover(ev, lbl)
+
+    def _toggle_curve(self, label):
+        curve = self._curve_items.get(label)
+        if curve is not None:
+            is_visible = curve.isVisible()
+            curve.setVisible(not is_visible)
+            label.setText(
+                f"<span style='color: #999999; text-decoration: line-through;'>{label.text}</span>"
+                if is_visible else label.text
+            )
+
+    def _on_hover(self, ev, label):
+        if ev.isEnter():
+            label.setFont(QFont("Microsoft YaHei", 10, QFont.Bold))
+        elif ev.isExit():
+            label.setFont(QFont("Microsoft YaHei", 10, QFont.Normal))
+
+
+class CandlestickItem(pg.GraphicsObject):
+    def __init__(self, data):
+        pg.GraphicsObject.__init__(self)
+        self.data = data
+
+        if data:
+            self.low_min = min(d["low"] for d in data)
+            self.high_max = max(d["high"] for d in data)
+            price_range = self.high_max - self.low_min
+            self.y_min = self.low_min - price_range * 0.05
+            self.y_max = self.high_max + price_range * 0.05
+        else:
+            self.low_min = 0
+            self.high_max = 1
+            self.y_min = 0
+            self.y_max = 1
+
+        self.generatePicture()
+
+    def generatePicture(self):
+        self.picture = QPicture()
+        p = QPainter(self.picture)
+
+        if not self.data:
+            p.end()
+            return
+
+        bar_width = 0.6
+        line_half_width = bar_width / 2
+        line_thickness = 1.5
+
+        for d in self.data:
+            t = d["time"]
+            open_price = d["open"]
+            high = d["high"]
+            low = d["low"]
+            close = d["close"]
+
+            if close > open_price:
+                linestyle = "阳线"
+                p.setBrush(pg.mkBrush("#d14545"))
+                p.setPen(pg.mkPen("#d14545", width=line_thickness))
+            elif close < open_price:
+                linestyle = "阴线"
+                p.setBrush(pg.mkBrush("#3f993f"))
+                p.setPen(pg.mkPen("#3f993f", width=line_thickness))
+            else:
+                linestyle = "平盘"
+                p.setPen(pg.mkPen("#808080", width=line_thickness))
+                p.drawLine(
+                    QPointF(t - line_half_width, open_price),
+                    QPointF(t + line_half_width, open_price),
+                )
+
+            if abs(high - low) > 1e-6:
+                if linestyle == "阳线":
+                    color = "#d14545"
+                elif linestyle == "阴线":
+                    color = "#3f993f"
+                elif linestyle == "平盘":
+                    color = "#808080"
+                p.setPen(pg.mkPen(color, width=line_thickness))
+                p.drawLine(QPointF(t, low), QPointF(t, high))
+
+            if linestyle != "平盘":
+                rect_top = min(open_price, close)
+                rect_height = abs(close - open_price)
+                p.drawRect(QRectF(t - bar_width / 2, rect_top, bar_width, rect_height))
+
+        p.end()
+
+    def paint(self, p, *args):
+        p.drawPicture(0, 0, self.picture)
+
+    def boundingRect(self):
+        if not self.data:
+            return QRectF(0, 0, 1, 1)
+
+        times = [d["time"] for d in self.data]
+        lows = [d["low"] for d in self.data]
+        highs = [d["high"] for d in self.data]
+
+        x_min = min(times) - 0.5
+        x_max = max(times) + 0.5
+        y_min = min(lows)
+        y_max = max(highs)
+
+        price_range = y_max - y_min
+        y_min_padded = y_min - price_range * 0.05
+        y_max_padded = y_max + price_range * 0.05
+
+        return QRectF(x_min, y_min_padded, x_max - x_min, y_max_padded - y_min_padded)
+
+
+class FullValueAxis(pg.AxisItem):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.enableAutoSIPrefix(False)
+
+    def tickStrings(self, values, scale, spacing):
+        return [f"{int(value):,}" for value in values]
+
+
+class DateAxis(pg.AxisItem):
+    def __init__(self, x_values, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.x_values = x_values
+        self.setLabel(text="交易日", units=None, **{"color": "k", "font-size": "12pt"})
+        self.enableAutoSIPrefix(False)
+        self.seen_indices_in_draw = set()
+
+    def tickStrings(self, values, scale, spacing):
+        strings = []
+        for v in values:
+            v_int = int(round(v))
+            if 0 <= v_int < len(self.x_values):
+                if v_int in self.seen_indices_in_draw:
+                    strings.append("")
+                else:
+                    strings.append(self.x_values[v_int])
+                    self.seen_indices_in_draw.add(v_int)
+            else:
+                strings.append("")
+        return strings
+
+    def generateDrawSpecs(self, p):
+        self.seen_indices_in_draw.clear()
+        labelSpec, tickSpecs, textSpecs = super().generateDrawSpecs(p)
+
+        if not textSpecs:
+            return (labelSpec, tickSpecs, textSpecs)
+
+        font_metrics = p.fontMetrics()
+        char_width = font_metrics.width("0000-00-00")
+        available_width = self.width()
+        max_ticks = max(1, int(available_width / (char_width * 1.5)))
+
+        if len(textSpecs) > max_ticks:
+            step = max(1, len(textSpecs) // max_ticks)
+            thinned_textSpecs = []
+            for i in range(0, len(textSpecs), step):
+                thinned_textSpecs.append(textSpecs[i])
+            if not thinned_textSpecs or textSpecs[-1] != thinned_textSpecs[-1]:
+                thinned_textSpecs.append(textSpecs[-1])
+            return (labelSpec, tickSpecs, thinned_textSpecs)
+
+        if len(textSpecs) >= 2:
+            try:
+                positions = [spec[0].x() for spec in textSpecs]
+                min_spacing = min(
+                    abs(positions[i + 1] - positions[i])
+                    for i in range(len(positions) - 1)
+                )
+                if min_spacing < char_width:
+                    step = max(2, int(char_width / min_spacing))
+                    thinned_textSpecs = textSpecs[::step]
+                    if not thinned_textSpecs or textSpecs[-1] != thinned_textSpecs[-1]:
+                        thinned_textSpecs.append(textSpecs[-1])
+                    return (labelSpec, tickSpecs, thinned_textSpecs)
+            except (AttributeError, IndexError):
+                pass
+
+        return (labelSpec, tickSpecs, textSpecs)
+
+
+class BacktestReportWindow(QMainWindow):
+    def __init__(self, result: "BacktestingResult", parent=None):
+        super().__init__(parent)
+        self.result = result
+        self.setWindowTitle("回测报告")
+        self.setGeometry(100, 100, 1858, 1082)
+        self.result.prepare_data()
+        self.plot_df = self.result.df
+        if self.result.trade_start_date and self.result.df is not None and not self.result.df.empty:
+            trade_start_dt = pd.to_datetime(self.result.trade_start_date)
+            dt_series = pd.to_datetime(self.result.df["datetime"])
+            self.plot_df = self.result.df[dt_series >= trade_start_dt].reset_index(drop=True)
+        self.trade_markers: dict[int, dict] = {}
+        self.tabs = QTabWidget()
+        self.setCentralWidget(self.tabs)
+        self._user_adjusted_columns = set()
+        self._column_widths = {}
+        self._instrument_hidden = False
+        self._original_instruments = []
+        self._column_filters = {}
+        self._filter_buttons = {}
+        self._saved_sort_column = -1
+        self._saved_sort_order = Qt.AscendingOrder
+
+        self.overview_tab = self._create_overview_tab()
+        self.tabs.addTab(self.overview_tab, "总览")
+
+        if self.result.config.show_kline:
+            self.kline_tab = self._create_kline_chart_tab()
+            self.tabs.addTab(self.kline_tab, "K线图")
+
+        self.daily_pnl_tab = self._create_daily_pnl_tab()
+        self.tabs.addTab(self.daily_pnl_tab, "每日收益")
+
+        self.trade_analysis_tab = self._create_trade_log_tab()
+        self.tabs.addTab(self.trade_analysis_tab, "交易明细")
+
+        self.daily_position_pnl_tab = self._create_daily_position_pnl_tab()
+        self.tabs.addTab(self.daily_position_pnl_tab, "每日持仓收益")
+
+        self.benchmark_tab = self._create_benchmark_tab()
+        self.tabs.addTab(self.benchmark_tab, "基准对比")
+
+        self.turnover_tab = self._create_turnover_tab()
+        self.tabs.addTab(self.turnover_tab, "换手率评估")
+
+    def _create_crosshair_items(
+        self, plot_widget: pg.PlotWidget
+    ) -> tuple[pg.InfiniteLine, pg.InfiniteLine, QTextEdit]:
+        vLine = pg.InfiniteLine(
+            angle=90, movable=False, pen=pg.mkPen("k", style=Qt.DashLine)
+        )
+        hLine = pg.InfiniteLine(
+            angle=0, movable=False, pen=pg.mkPen("k", style=Qt.DashLine)
+        )
+        vLine.hide()
+        hLine.hide()
+        plot_widget.addItem(vLine, ignoreBounds=True)
+        plot_widget.addItem(hLine, ignoreBounds=True)
+
+        tooltip_edit = QTextEdit(plot_widget)
+        tooltip_edit.setReadOnly(True)
+        tooltip_edit.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        tooltip_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        tooltip_edit.setFocusPolicy(Qt.WheelFocus)
+        tooltip_edit.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+        tooltip_edit.setMinimumWidth(420)
+        tooltip_edit.setStyleSheet(
+            "QTextEdit {"
+            "  background-color: rgba(255, 255, 255, 235);"
+            "  border: 1px solid #cccccc;"
+            "  padding: 6px;"
+            "  font-size: 15px;"
+            "  font-family: Microsoft YaHei;"
+            "}"
+            "QTextEdit QScrollBar:vertical {"
+            "  width: 8px;"
+            "  background: rgba(240, 240, 240, 200);"
+            "}"
+            "QTextEdit QScrollBar::handle:vertical {"
+            "  background: rgba(180, 180, 180, 200);"
+            "  border-radius: 4px;"
+            "}"
+        )
+        tooltip_edit.setLineWrapMode(QTextEdit.WidgetWidth)
+        tooltip_edit.hide()
+        return vLine, hLine, tooltip_edit
+
+    def _update_tooltip_position(
+        self,
+        tooltip_widget: QWidget,
+        scene_pos: QPointF,
+        view_box: pg.ViewBox,
+        margin: int = 10,
+    ):
+        # 将 scene 坐标映射到 tooltip 父控件（plot_widget）的局部坐标
+        plot_widget = tooltip_widget.parentWidget()
+        if plot_widget is None:
+            plot_widget = view_box.getViewWidget()
+        local_pos = plot_widget.mapFromScene(scene_pos)
+        tooltip_pos = local_pos
+
+        label_width = tooltip_widget.width()
+        label_height = tooltip_widget.height()
+        plot_rect = plot_widget.rect()
+
+        # 计算最大可用高度（窗口高度的 80%，防止超出屏幕）
+        window = plot_widget.window()
+        max_height = int(window.height() * 0.92) if window else plot_rect.height()
+        if label_height > max_height:
+            label_height = max_height
+            tooltip_widget.setFixedHeight(max_height)
+        else:
+            tooltip_widget.setFixedHeight(label_height)
+
+        # X 方向：优先放在鼠标右侧，超出右边界则放左侧
+        if tooltip_pos.x() + label_width > plot_rect.right() - margin:
+            x_pos = tooltip_pos.x() - label_width - margin
+        else:
+            x_pos = tooltip_pos.x() + margin
+
+        # Y 方向：需要同时考虑顶部和底部边界
+        space_above = tooltip_pos.y() - plot_rect.top() - margin
+        space_below = plot_rect.bottom() - tooltip_pos.y() - margin
+
+        if label_height <= space_above:
+            # 上方空间足够，优先放上方（不遮挡鼠标下方内容）
+            y_pos = tooltip_pos.y() - label_height - margin
+        elif label_height <= space_below:
+            # 上方不够但下方够，放下方
+            y_pos = tooltip_pos.y() + margin
+        else:
+            # 上下都不够，选择空间较大的一侧，并做偏移确保可见
+            if space_above >= space_below:
+                y_pos = plot_rect.top() + margin
+            else:
+                y_pos = plot_rect.bottom() - label_height - margin
+
+        tooltip_widget.move(int(x_pos), int(y_pos))
+        tooltip_widget.raise_()
+
+    def _get_visible_data_slice(
+        self, x_min: float, x_max: float, all_data: list
+    ) -> list:
+        index_min = max(0, int(round(x_min)))
+        index_max = min(len(all_data), int(round(x_max)) + 1)
+
+        if index_min >= index_max:
+            return [all_data[index_min]] if 0 <= index_min < len(all_data) else []
+
+        return all_data[index_min:index_max]
+
+    def _handle_bounded_x_range_change(
+        self,
+        view_box: pg.ViewBox,
+        x_range: tuple[float, float],
+        data_length: int,
+        margin: float,
+        min_display_range: float,
+        y_adapter_func: Callable,
+    ):
+        x_min, x_max = x_range
+
+        if data_length < min_display_range:
+            min_display_range = data_length if data_length > 0 else 1.0
+
+        min_bound = -margin
+        max_bound = data_length - 1 + margin
+        allowed_range = max_bound - min_bound
+        current_range = x_max - x_min
+
+        range_changed = False
+
+        if current_range < min_display_range and data_length > 0:
+            center = (x_min + x_max) / 2
+            x_min = center - min_display_range / 2
+            x_max = center + min_display_range / 2
+            current_range = x_max - x_min
+            range_changed = True
+
+        if current_range > allowed_range:
+            x_min = min_bound
+            x_max = max_bound
+            current_range = x_max - x_min
+            range_changed = True
+
+        if x_min < min_bound:
+            x_min = min_bound
+            x_max = x_min + current_range
+            range_changed = True
+        elif x_max > max_bound:
+            x_max = max_bound
+            x_min = x_max - current_range
+            range_changed = True
+
+        if range_changed:
+            view_box.setXRange(x_min, x_max, padding=0, update=False)
+            x_min, x_max = view_box.viewRange()[0]
+
+        y_adapter_func(view_box, x_min, x_max)
+
+    BENCHMARK_NAME_MAP = {
+        "000300.SH": "沪深300",
+        "000016.SH": "上证50",
+        "000905.SH": "中证500",
+        "000852.SH": "中证1000",
+        "000001.SH": "上证指数",
+        "399001.SZ": "深证成指",
+        "399006.SZ": "创业板指",
+    }
+
+    def _resample_klines_to_daily(self, klines):
+        if not klines:
+            return klines
+        has_intraday = any(
+            k["datetime"].hour != 15 or k["datetime"].minute != 0
+            for k in klines
+            if isinstance(k["datetime"], dt_module.datetime)
+        )
+        if not has_intraday:
+            return klines
+        daily_map = OrderedDict()
+        for k in klines:
+            dt = k["datetime"]
+            if isinstance(dt, dt_module.datetime):
+                date_key = dt.date()
+            else:
+                date_key = pd.Timestamp(dt).date()
+            if date_key not in daily_map:
+                daily_map[date_key] = {
+                    "datetime": dt_module.datetime.combine(date_key, dt_module.time(15, 0)),
+                    "open": k["open"],
+                    "high": k["high"],
+                    "low": k["low"],
+                    "close": k["close"],
+                    "volume": k["volume"],
+                }
+            else:
+                d = daily_map[date_key]
+                d["high"] = max(d["high"], k["high"])
+                d["low"] = min(d["low"], k["low"])
+                d["close"] = k["close"]
+                d["volume"] += k["volume"]
+        return list(daily_map.values())
+
+    def _convert_benchmark_to_klines(self, benchmark_df):
+        klines = []
+        for dt, row in benchmark_df.iterrows():
+            if not isinstance(dt, pd.Timestamp):
+                dt = pd.Timestamp(dt)
+            bar_dt = dt.to_pydatetime()
+            if bar_dt.hour == 0 and bar_dt.minute == 0:
+                bar_dt = bar_dt.replace(hour=15, minute=0)
+            kline = {
+                "datetime": bar_dt,
+                "open": float(row["open"]),
+                "high": float(row["high"]),
+                "low": float(row["low"]),
+                "close": float(row["close"]),
+                "volume": float(row.get("volume", 0)),
+            }
+            klines.append(kline)
+        return klines
+
+    def _create_kline_chart_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        use_benchmark_klines = (
+            len(self.result.instruments_data) > 1
+            and self.result.benchmark_df is not None
+            and not self.result.benchmark_df.empty
+            and all(col in self.result.benchmark_df.columns for col in ["open", "high", "low", "close"])
+        )
+
+        if use_benchmark_klines:
+            klines_full = self._convert_benchmark_to_klines(self.result.benchmark_df)
+            benchmark_symbol = self.result.benchmark_symbol or "000300.SH"
+            kline_title = f"K线图 - {self.BENCHMARK_NAME_MAP.get(benchmark_symbol, benchmark_symbol)}"
+        else:
+            required_params = {
+                "instrument_id": self.result.strategy_params.get("instrument_id"),
+                "exchange": self.result.strategy_params.get("exchange"),
+                "kline_style": self.result.strategy_params.get("kline_style"),
+            }
+            missing_params = [name for name, value in required_params.items() if not value]
+
+            if missing_params:
+                missing_str = "、".join(missing_params)
+                label = QLabel(f"无法生成K线图，请在回测策略参数中提供：{missing_str}")
+                label.setAlignment(Qt.AlignCenter)
+                label.setStyleSheet(
+                    "font-size: 18px; color: #d14545; font-weight: bold; margin: 20px;"
+                )
+                layout.addWidget(label)
+                return tab
+
+            if not hasattr(self.result, "klines") or not self.result.klines:
+                layout.addWidget(
+                    QLabel(
+                        "无K线数据，无法生成图表。",
+                        alignment=Qt.AlignCenter,
+                        styleSheet="QLabel { font-size: 28px; font-weight: bold; }",
+                    )
+                )
+                return tab
+
+            klines_full = self.result.klines[10:]
+            klines_full = self._resample_klines_to_daily(klines_full)
+            kline_title = "K线图"
+        if not klines_full:
+            label = QLabel("K线数据量不足。", alignment=Qt.AlignCenter)
+            label.setStyleSheet("QLabel { font-size: 28px; font-weight: bold; }")
+            layout.addWidget(label)
+            return tab
+
+        self.all_klines = klines_full
+        self.total_data_count = len(klines_full)
+        MAX_INITIAL_DISPLAY = 360
+        initial_klines = klines_full[-MAX_INITIAL_DISPLAY:]
+        self.loaded_data_index = self.total_data_count - len(initial_klines)
+
+        self.kline_data = [
+            {
+                "time": self.loaded_data_index + i,
+                "open": k["open"],
+                "high": k["high"],
+                "low": k["low"],
+                "close": k["close"],
+                "datetime": k["datetime"],
+            }
+            for i, k in enumerate(initial_klines)
+        ]
+        self.kline_x_axis_ticks = {
+            self.loaded_data_index + i: k["datetime"].strftime("%Y-%m-%d")
+            for i, k in enumerate(initial_klines)
+        }
+
+        all_date_strings = [
+            k["datetime"].strftime("%Y-%m-%d") for k in self.all_klines
+        ]
+        axis = DateAxis(x_values=all_date_strings, orientation="bottom")
+        left_axis = FullValueAxis(orientation="left")
+        plot_widget = pg.PlotWidget(
+            axisItems={"bottom": axis, "left": left_axis}, useOpenGL=True
+        )
+        plot_widget.setRenderHint(QPainter.Antialiasing)
+        plot_widget.setRenderHint(QPainter.SmoothPixmapTransform)
+        plot_widget.setViewportUpdateMode(QGraphicsView.BoundingRectViewportUpdate)
+        plot_widget.setCacheMode(QGraphicsView.CacheBackground)
+        plot_widget.setBackground("#f7f7f7")
+        plot_widget.setTitle(kline_title, color="k", size="16pt", bold=True)
+        plot_widget.showGrid(x=True, y=True, alpha=0.3)
+        plot_widget.getPlotItem().layout.setContentsMargins(10, 25, 10, 10)
+
+        self.candlestick_item = CandlestickItem(self.kline_data)
+        plot_widget.addItem(self.candlestick_item)
+
+        self._add_ma_lines(plot_widget, initial_klines, self.loaded_data_index)
+
+        initial_x_min = self.total_data_count - MAX_INITIAL_DISPLAY
+        initial_x_max = self.total_data_count - 0.5
+        margin = 5
+        initial_x_min = max(0, initial_x_min - margin)
+        initial_x_max = initial_x_max + margin
+
+        plot_widget.setXRange(initial_x_min, initial_x_max, padding=0)
+        plot_widget.setLabel("left", "价格", **{"color": "k", "font-size": "12pt"})
+        plot_widget.setLabel("bottom", "时间", **{"color": "k", "font-size": "12pt"})
+
+        self._add_trade_markers(plot_widget, self.candlestick_item)
+        self._add_kline_tooltip(plot_widget)
+
+        view_box = plot_widget.getViewBox()
+        view_box.setMouseEnabled(x=True, y=False)
+        view_box.enableAutoRange(axis=view_box.YAxis, enable=False)
+        self.kline_view_box = view_box
+
+        self._is_initializing = True
+        view_box.sigXRangeChanged.connect(self.kline_x_range_changed)
+        self.kline_x_range_changed(
+            view_box, (initial_x_min, initial_x_max), force_y_only=True
+        )
+        self._is_initializing = False
+
+        layout.addWidget(plot_widget)
+        return tab
+
+    def load_history(self, num_to_load=360):
+        if self.loaded_data_index <= 0:
+            return False
+
+        start_index = max(0, self.loaded_data_index - num_to_load)
+        new_klines = self.all_klines[start_index : self.loaded_data_index]
+        if not new_klines:
+            self.loaded_data_index = 0
+            return False
+
+        new_data_for_plot = [
+            {
+                "time": start_index + i,
+                "open": k["open"],
+                "high": k["high"],
+                "low": k["low"],
+                "close": k["close"],
+                "datetime": k["datetime"],
+            }
+            for i, k in enumerate(new_klines)
+        ]
+        new_x_axis_ticks = {
+            start_index + i: k["datetime"].strftime("%Y-%m-%d")
+            for i, k in enumerate(new_klines)
+        }
+
+        self.kline_data = new_data_for_plot + self.kline_data
+        self.kline_x_axis_ticks.update(new_x_axis_ticks)
+        self.candlestick_item.data = self.kline_data
+        self.candlestick_item.generatePicture()
+        self.candlestick_item.update()
+
+        self._update_ma_lines()
+
+        self.loaded_data_index = start_index
+        return True
+
+    def _update_ma_lines(self):
+        if not hasattr(self, "ma_line_items") or not self.ma_line_items:
+            return
+
+        ma_keys = list(self.ma_line_items.keys())
+
+        for ma_key in ma_keys:
+            line_item = self.ma_line_items[ma_key]
+
+            ma_data = []
+            for i, k in enumerate(self.all_klines[self.loaded_data_index:]):
+                if ma_key in k and k[ma_key] is not None:
+                    ma_data.append((self.loaded_data_index + i, k[ma_key]))
+
+            if ma_data:
+                x_vals = np.array([d[0] for d in ma_data])
+                y_vals = np.array([d[1] for d in ma_data])
+                line_item.setData(x_vals, y_vals)
+
+    def _add_trade_markers(self, plot_widget, candlestick_item):
+        if (
+            not hasattr(self, "all_klines")
+            or not self.all_klines
+            or not self.result.trade_log
+        ):
+            return
+
+        kline_dates = [k["datetime"].date() if isinstance(k["datetime"], dt_module.datetime) else pd.Timestamp(k["datetime"]).date() for k in self.all_klines]
+
+        trades_by_kline_index = defaultdict(list)
+        for trade in self.result.trade_log:
+            if trade.trade_price <= 0 or trade.order_id == -1:
+                continue
+            if not trade.trade_time:
+                continue
+
+            trade_date = trade.trade_time.date() if isinstance(trade.trade_time, dt_module.datetime) else pd.Timestamp(trade.trade_time).date()
+
+            best_idx = None
+            best_dist = None
+            for i, kd in enumerate(kline_dates):
+                dist = abs((kd - trade_date).days)
+                if best_dist is None or dist < best_dist:
+                    best_dist = dist
+                    best_idx = i
+            if best_idx is not None:
+                trades_by_kline_index[best_idx].append(trade)
+
+        (
+            buy_spots,
+            sell_spots,
+            m_spots,
+            buy_lines_x,
+            buy_lines_y,
+            sell_lines_x,
+            sell_lines_y,
+            m_lines_x,
+            m_lines_y,
+        ) = ([], [], [], [], [], [], [], [], [])
+        price_range = candlestick_item.high_max - candlestick_item.low_min
+        arrow_offset, marker_size = price_range * 0.03, 28
+
+        self.marker_arrow_offset = arrow_offset
+
+        marker_font = QFont()
+        marker_font.setBold(True)
+        marker_font.setPointSize(12)
+        multi_trade_color = "#F8AE00"
+        buy_color = "#d14545"
+        sell_color = "#3f993f"
+
+        for closest_kline_index, trades_list in trades_by_kline_index.items():
+            if not trades_list:
+                continue
+            kline_data = self.all_klines[closest_kline_index]
+            num_trades = len(trades_list)
+            text_items_for_kline = []
+
+            if num_trades == 1:
+                trade = trades_list[0]
+                is_buy = trade.direction == "0"
+                y_pos = (
+                    kline_data["low"] - arrow_offset
+                    if is_buy
+                    else kline_data["high"] + arrow_offset
+                )
+                spot_data = {"pos": (closest_kline_index, y_pos), "size": marker_size}
+
+                if y_pos > kline_data["high"]:
+                    connect_to_y = kline_data["high"]
+                elif y_pos < kline_data["low"]:
+                    connect_to_y = kline_data["low"]
+
+                line_coords = (
+                    [closest_kline_index, closest_kline_index],
+                    [y_pos, connect_to_y],
+                )
+
+                if is_buy:
+                    buy_spots.append(spot_data)
+                    buy_lines_x.extend(line_coords[0])
+                    buy_lines_y.extend(line_coords[1])
+                else:
+                    sell_spots.append(spot_data)
+                    sell_lines_x.extend(line_coords[0])
+                    sell_lines_y.extend(line_coords[1])
+
+                text = pg.TextItem(
+                    text="B" if is_buy else "S", color="#fff8f8", anchor=(0.5, 0.5)
+                )
+                text.setFont(marker_font)
+                text.setPos(closest_kline_index, y_pos)
+                text.setZValue(10)
+                plot_widget.addItem(text)
+                text_items_for_kline.append(text)
+
+            elif num_trades > 1:
+                has_buy = any(t.direction == "0" for t in trades_list)
+                has_sell = any(t.direction == "1" for t in trades_list)
+
+                marker_text = ""
+                text_color = ""
+                y_pos = kline_data["high"] + arrow_offset
+
+                if has_buy and has_sell:
+                    marker_text = "M"
+                    text_color = "#FFFFFF"
+                    y_pos = kline_data["high"] + arrow_offset
+                elif has_buy:
+                    marker_text = "B"
+                    text_color = "#fff8f8"
+                    y_pos = kline_data["low"] - arrow_offset
+                elif has_sell:
+                    marker_text = "S"
+                    text_color = "#fff8f8"
+                    y_pos = kline_data["high"] + arrow_offset
+
+                if marker_text:
+                    spot_data = {
+                        "pos": (closest_kline_index, y_pos),
+                        "size": marker_size,
+                    }
+
+                    if y_pos > kline_data["high"]:
+                        connect_to_y = kline_data["high"]
+                    elif y_pos < kline_data["low"]:
+                        connect_to_y = kline_data["low"]
+                    else:
+                        # y_pos 在 high 和 low 之间，连接到 close 价格
+                        connect_to_y = kline_data.get("close", y_pos)
+
+                    line_coords = (
+                        [closest_kline_index, closest_kline_index],
+                        [y_pos, connect_to_y],
+                    )
+
+                    if marker_text == "M":
+                        m_spots.append(spot_data)
+                        m_lines_x.extend(line_coords[0])
+                        m_lines_y.extend(line_coords[1])
+                    elif marker_text == "B":
+                        buy_spots.append(spot_data)
+                        buy_lines_x.extend(line_coords[0])
+                        buy_lines_y.extend(line_coords[1])
+                    elif marker_text == "S":
+                        sell_spots.append(spot_data)
+                        sell_lines_x.extend(line_coords[0])
+                        sell_lines_y.extend(line_coords[1])
+
+                    text = pg.TextItem(
+                        text=marker_text, color=text_color, anchor=(0.5, 0.5)
+                    )
+                    text.setFont(marker_font)
+                    text.setPos(closest_kline_index, y_pos)
+                    text.setZValue(10)
+                    plot_widget.addItem(text)
+                    text_items_for_kline.append(text)
+
+            if text_items_for_kline:
+                self.trade_markers[closest_kline_index] = {
+                    "items": text_items_for_kline,
+                    "trades": trades_list,
+                }
+
+        if buy_lines_x:
+            plot_widget.addItem(
+                pg.PlotDataItem(
+                    np.array(buy_lines_x),
+                    np.array(buy_lines_y),
+                    pen=pg.mkPen(buy_color, width=1, style=Qt.DotLine),
+                    connect="pairs",
+                )
+            )
+        if sell_lines_x:
+            plot_widget.addItem(
+                pg.PlotDataItem(
+                    np.array(sell_lines_x),
+                    np.array(sell_lines_y),
+                    pen=pg.mkPen(sell_color, width=1, style=Qt.DotLine),
+                    connect="pairs",
+                )
+            )
+        if m_lines_x:
+            plot_widget.addItem(
+                pg.PlotDataItem(
+                    np.array(m_lines_x),
+                    np.array(m_lines_y),
+                    pen=pg.mkPen(multi_trade_color, width=1, style=Qt.DotLine),
+                    connect="pairs",
+                )
+            )
+
+        if buy_spots:
+            plot_widget.addItem(
+                pg.ScatterPlotItem(
+                    spots=buy_spots,
+                    symbol="o",
+                    pen=pg.mkPen(buy_color, width=2),
+                    brush=pg.mkBrush(buy_color),
+                )
+            )
+        if sell_spots:
+            plot_widget.addItem(
+                pg.ScatterPlotItem(
+                    spots=sell_spots,
+                    symbol="o",
+                    pen=pg.mkPen(sell_color, width=2),
+                    brush=pg.mkBrush(sell_color),
+                )
+            )
+        if m_spots:
+            plot_widget.addItem(
+                pg.ScatterPlotItem(
+                    spots=m_spots,
+                    symbol="o",
+                    pen=pg.mkPen(multi_trade_color, width=2),
+                    brush=pg.mkBrush(multi_trade_color),
+                )
+            )
+
+    def _add_ma_lines(self, plot_widget, klines, start_index):
+        if not klines:
+            return
+
+        ma_keys = [k for k in klines[0].keys() if k.startswith("MA")]
+        if not ma_keys:
+            return
+
+        self.ma_line_items = {}
+
+        colors = {"MA5": "#FF6B6B", "MA10": "#4ECDC4", "MA20": "#45B7D1", "MA30": "#96CEB4", "MA60": "#FFEAA7"}
+
+        for ma_key in ma_keys:
+            ma_data = []
+            for i, k in enumerate(self.all_klines):
+                if ma_key in k and k[ma_key] is not None:
+                    ma_data.append((i, k[ma_key]))
+
+            if ma_data:
+                x_vals = np.array([d[0] for d in ma_data])
+                y_vals = np.array([d[1] for d in ma_data])
+                color = colors.get(ma_key, "#888888")
+                line_item = pg.PlotDataItem(
+                    x_vals,
+                    y_vals,
+                    pen=pg.mkPen(color, width=1.5),
+                    name=ma_key,
+                )
+                plot_widget.addItem(line_item)
+                self.ma_line_items[ma_key] = line_item
+
+    def _add_kline_tooltip(self, plot_widget):
+        self.kline_vLine, self.kline_hLine, self.kline_tooltip_label = (
+            self._create_crosshair_items(plot_widget)
+        )
+        self._kline_tooltip_pinned = False
+        self.kline_proxy = pg.SignalProxy(
+            plot_widget.scene().sigMouseMoved, rateLimit=30, slot=self.kline_mouse_moved
+        )
+        plot_widget.scene().sigMouseClicked.connect(self._kline_scene_clicked)
+
+    def _kline_scene_clicked(self, event):
+        if not hasattr(self, "kline_tooltip_label"):
+            return
+        if self._kline_tooltip_pinned:
+            self._kline_tooltip_pinned = False
+            self.kline_tooltip_label.setStyleSheet(
+                "QTextEdit {"
+                "  background-color: rgba(255, 255, 255, 235);"
+                "  border: 1px solid #cccccc;"
+                "  padding: 6px;"
+                "  font-size: 15px;"
+                "  font-family: Microsoft YaHei;"
+                "}"
+                "QTextEdit QScrollBar:vertical {"
+                "  width: 8px;"
+                "  background: rgba(240, 240, 240, 200);"
+                "}"
+                "QTextEdit QScrollBar::handle:vertical {"
+                "  background: rgba(180, 180, 180, 200);"
+                "  border-radius: 4px;"
+                "}"
+            )
+            self.kline_tooltip_label.hide()
+            self.kline_vLine.hide()
+            self.kline_hLine.hide()
+            return
+        if self.kline_tooltip_label.isVisible():
+            self._kline_tooltip_pinned = True
+            self.kline_tooltip_label.setStyleSheet(
+                "QTextEdit {"
+                "  background-color: rgba(255, 255, 255, 245);"
+                "  border: 2px solid #4a90d9;"
+                "  padding: 6px;"
+                "  font-size: 15px;"
+                "  font-family: Microsoft YaHei;"
+                "}"
+                "QTextEdit QScrollBar:vertical {"
+                "  width: 8px;"
+                "  background: rgba(240, 240, 240, 200);"
+                "}"
+                "QTextEdit QScrollBar::handle:vertical {"
+                "  background: rgba(180, 180, 180, 200);"
+                "  border-radius: 4px;"
+                "}"
+            )
+
+    def kline_mouse_moved(self, event):
+        if not hasattr(self, "kline_vLine") or not hasattr(self, "kline_data"):
+            return
+        if self._kline_tooltip_pinned:
+            return
+        pos = event[0]
+        vb = self.kline_vLine.getViewBox()
+        if vb.sceneBoundingRect().contains(pos):
+            mousePoint = vb.mapSceneToView(pos)
+            x, y = mousePoint.x(), mousePoint.y()
+            kline_times = [k["time"] for k in self.kline_data]
+            idx = bisect.bisect_left(kline_times, x)
+            closest_kline, min_distance = None, float("inf")
+            indices_to_check = [idx - 1] if idx > 0 else []
+            if idx < len(self.kline_data):
+                indices_to_check.append(idx)
+            if not indices_to_check:
+                return
+
+            for i in indices_to_check:
+                distance = abs(self.kline_data[i]["time"] - x)
+                if distance < min_distance:
+                    min_distance = distance
+                    closest_kline = self.kline_data[i]
+
+            if closest_kline and min_distance < 0.5:
+                self.kline_vLine.show()
+                self.kline_hLine.show()
+                self.kline_vLine.setPos(x)
+                self.kline_hLine.setPos(y)
+
+                kline = closest_kline
+                datetime_str = self.kline_x_axis_ticks.get(kline["time"], "未知时间")
+
+                kline_parts = [
+                    f'<span style="font-size: 16px;"><b>{kline["time"]}</b></span>',
+                    f'<span style="font-size: 15px;"><b>时间</b>: {datetime_str}</span>',
+                    f'<span style="font-size: 15px;"><b>开盘</b>: <span style="color: #000000;">{kline["open"]:.2f}</span></span>',
+                    f'<span style="font-size: 15px;"><b>收盘</b>: <span style="color: #000000;">{kline["close"]:.2f}</span></span>',
+                    f'<span style="font-size: 15px;"><b>最高</b>: <span style="color: #000000;">{kline["high"]:.2f}</span></span>',
+                    f'<span style="font-size: 15px;"><b>最低</b>: <span style="color: #000000;">{kline["low"]:.2f}</span></span>',
+                ]
+
+                trade_parts = []
+                trade_list = self.trade_markers.get(kline["time"], {}).get("trades")
+
+                if trade_list:
+                    for trade_info in trade_list:
+                        if trade_info.direction == "0":
+                            color = "#d14545"
+                            action = "买开" if trade_info.offset == "0" else "买平"
+                        else:
+                            color = "#3f993f"
+                            action = "卖开" if trade_info.offset == "0" else "卖平"
+
+                        trade_text = f"{trade_info.instrument_id} {action} {trade_info.volume} 手 @ {trade_info.trade_price:.2f}"
+                        trade_parts.append(
+                            f'<span style="color: {color}; font-size: 15px;"><strong>{trade_text}</strong></span>'
+                        )
+
+                final_html_parts = ["<br>".join(kline_parts)]
+                if trade_parts:
+                    final_html_parts.append(
+                        '<div style="margin: 3px 0; padding: 0; height: 1px; border-top: 1px dashed #999;"></div>'
+                    )
+                    final_html_parts.append("<br>".join(trade_parts))
+
+                self.kline_tooltip_label.setHtml("".join(final_html_parts))
+
+                self.kline_tooltip_label.adjustSize()
+                self._update_tooltip_position(self.kline_tooltip_label, pos, vb)
+                self.kline_tooltip_label.show()
+            else:
+                self.kline_tooltip_label.hide()
+                self.kline_vLine.hide()
+                self.kline_hLine.hide()
+        else:
+            self.kline_tooltip_label.hide()
+            self.kline_vLine.hide()
+            self.kline_hLine.hide()
+
+    def kline_x_range_changed(self, view_box, x_range, force_y_only=False):
+        if not hasattr(self, "kline_data") or not self.kline_data:
+            return
+        if (
+            hasattr(self, "_is_initializing")
+            and self._is_initializing
+            and not force_y_only
+        ):
+            if force_y_only:
+                self._synchronize_markers(*view_box.viewRange()[0])
+            return
+
+        x_min, x_max = x_range
+        if not force_y_only:
+            total_data_count = len(self.all_klines)
+            current_range = x_max - x_min
+            min_bound, max_bound = -0.5 - 5, total_data_count - 0.5 + 5
+            allowed_range = max_bound - min_bound if total_data_count > 0 else 1.0
+            range_changed = False
+
+            min_display_range = 3.0
+            limit_range = 1440.0
+            range_limit_applied = False
+
+            if (
+                current_range < min_display_range
+                and total_data_count > min_display_range
+            ):
+                center_x = (x_min + x_max) / 2
+                x_min = center_x - min_display_range / 2
+                x_max = center_x + min_display_range / 2
+                current_range = x_max - x_min
+                range_limit_applied = True
+                range_changed = True
+
+            elif current_range > limit_range:
+                center_x = (x_min + x_max) / 2
+                x_min = center_x - (limit_range / 2)
+                x_max = center_x + (limit_range / 2)
+                current_range = x_max - x_min
+                range_limit_applied = True
+                range_changed = True
+
+            if x_max > max_bound:
+                shift = x_max - max_bound
+                x_max = max_bound
+                x_min = x_min - shift
+                range_changed = True
+            elif x_min < min_bound:
+                shift = min_bound - x_min
+                x_min = min_bound
+                x_max = x_max + shift
+                range_changed = True
+
+            if range_changed:
+                if x_min < min_bound:
+                    x_min = min_bound
+                    x_max = x_min + current_range
+                if x_max > max_bound:
+                    x_max = max_bound
+                    x_min = x_max - current_range
+
+                view_box.setXRange(x_min, x_max, padding=0, update=False)
+                x_min, x_max = view_box.viewRange()[0]
+
+            if (
+                x_min < self.loaded_data_index + (x_max - x_min) * 0.1
+                and self.loaded_data_index > 0
+            ):
+                if self.load_history():
+                    current_x_min, current_x_max = view_box.viewRange()[0]
+                    current_center = (current_x_min + current_x_max) / 2
+                    current_range_after_load = current_x_max - current_x_min
+
+                    new_x_min = current_center - current_range_after_load / 2
+                    new_x_max = current_center + current_range_after_load / 2
+
+                    new_min_bound = -0.5 - 5
+                    if new_x_min < new_min_bound:
+                        shift = new_min_bound - new_x_min
+                        new_x_min = new_min_bound
+                        new_x_max += shift
+
+                    view_box.setXRange(new_x_min, new_x_max, padding=0, update=False)
+                    x_min, x_max = view_box.viewRange()[0]
+
+        self._synchronize_markers(x_min, x_max)
+        self._adapt_kline_y_axis(view_box, x_min, x_max)
+
+    def _adapt_kline_y_axis(self, view_box, x_min, x_max):
+        visible_data = [
+            d for d in self.kline_data if int(x_min) <= d["time"] < int(x_max) + 1
+        ]
+        if not visible_data or not hasattr(self, "candlestick_item"):
+            return
+
+        # 过滤掉 NaN 值
+        valid_lows = [d["low"] for d in visible_data if not (d["low"] != d["low"])]  # NaN check
+        valid_highs = [d["high"] for d in visible_data if not (d["high"] != d["high"])]  # NaN check
+
+        if not valid_lows or not valid_highs:
+            return
+
+        kline_y_min, kline_y_max = min(valid_lows), max(valid_highs)
+
+        marker_offset = getattr(self, "marker_arrow_offset", 0.0)
+
+        final_y_min = kline_y_min - marker_offset
+        final_y_max = kline_y_max + marker_offset
+
+        total_range = self.candlestick_item.high_max - self.candlestick_item.low_min
+        min_padding = total_range * 0.025
+
+        visible_range = final_y_max - final_y_min
+        dyn_padding = visible_range * 0.05
+
+        padding = (
+            max(min_padding, dyn_padding)
+            if visible_range > 0
+            else max(0.005, min_padding)
+        )
+
+        view_box.setYRange(final_y_min - padding, final_y_max + padding, padding=0)
+
+    def _synchronize_markers(self, x_min: float, x_max: float):
+        if not self.trade_markers:
+            return
+        for index, data in self.trade_markers.items():
+            is_visible = x_min - 0.5 <= index <= x_max + 0.5
+            for item in data["items"]:
+                if item.isVisible() != is_visible:
+                    item.setVisible(is_visible)
+
+    def _create_overview_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QGridLayout(tab)
+        layout.addWidget(self._create_metrics_panel(), 0, 0)
+        self._create_equity_chart_panel(layout)
+        layout.setColumnStretch(0, 1)
+        layout.setColumnStretch(1, 3)
+        return tab
+
+    def _add_metric_separator(self, layout: QGridLayout, row: int, title: str) -> int:
+        title_label = QLabel(title)
+        title_label.setFont(QFont("Microsoft YaHei", 14, QFont.Bold))
+        layout.addWidget(title_label, row, 0, 1, 2)
+        return row + 1
+
+    def _create_metrics_panel(self) -> QWidget:
+        panel = QFrame()
+        panel.setFrameShape(QFrame.StyledPanel)
+        panel.setStyleSheet(
+            "QFrame { background-color: #f7f7f7; border: 1px solid #e0e0e0; border-radius: 8px; padding: 10px; } QLabel { background-color: transparent; border: none; padding: 3px; }"
+        )
+        layout = QGridLayout(panel)
+        layout.setSpacing(10)
+        all_metrics = {
+            "整体表现": {
+                "初始资金": f"{self.result.account.initial_capital:,.2f}",
+                "结束资金": f"{self.result.account.dynamic_rights:,.2f}",
+                "总收益": f"{self.result.account.total_profit:,.2f}",
+                "收益率": f"{self.result.account.rate:.2%}",
+                "年化收益率": f"{self.result.annual_return(self.result.account.initial_capital, self.result.account.dynamic_rights):.2%}",
+            },
+            "风险评估": {
+                "最大回撤": f"{self.result.max_drawdown():.2%}",
+                "夏普比率": f"{self.result.sharpe_ratio():.2f}",
+                "Sortino比率": f"{self.result.sortino_ratio():.2f}",
+            },
+            "交易统计": {
+                "总成交额": f"{self.result.turnover:,.2f}",
+                "总手续费": f"{self.result.account.fee:,.2f}",
+                "总成交手数": f"{self.result.total_volume}",
+                "总交易日": f"{self.result.total_trading_days}",
+                "盈利天数": f"{self.result.pnl_days[0]}",
+                "亏损天数": f"{self.result.pnl_days[1]}",
+            },
+        }
+
+        if self.result.benchmark_df is not None and not self.result.benchmark_df.empty:
+            benchmark_symbol = self.result.benchmark_symbol or "000300.SH"
+            benchmark_display_name = self.BENCHMARK_NAME_MAP.get(benchmark_symbol, benchmark_symbol)
+            all_metrics["基准分析"] = {
+                "Alpha(年化)": f"{self.result.alpha(self.result.benchmark_df):.4f}",
+                "Beta": f"{self.result.beta(self.result.benchmark_df):.4f}",
+                "信息比率": f"{self.result.information_ratio(self.result.benchmark_df):.4f}",
+                "跟踪误差": f"{self.result.tracking_error(self.result.benchmark_df):.4f}",
+            }
+
+        print("\n" + "="*60)
+        print("回测结果汇总")
+        print("="*60)
+        for group_title, metrics in all_metrics.items():
+            print(f"\n【{group_title}】")
+            for name, value in metrics.items():
+                print(f"  {name}: {value}")
+        print("="*60 + "\n")
+
+        row = 0
+        for group_title, metrics in all_metrics.items():
+            row = self._add_metric_separator(layout, row, group_title)
+            for name, value in metrics.items():
+                name_label, value_label = QLabel(name), QLabel(value)
+                name_label.setFont(QFont("Microsoft YaHei", 11))
+                name_label.setStyleSheet("color: #666;")
+                value_label.setFont(QFont("Arial", 11, QFont.Bold))
+                value_label.setAlignment(Qt.AlignRight)
+                if "收益" in name or "盈亏" in name:
+                    value_label.setStyleSheet(
+                        "color: #d14545;"
+                        if self.result.account.total_profit > 0
+                        else "color: #3f993f;"
+                    )
+                layout.addWidget(name_label, row, 0)
+                layout.addWidget(value_label, row, 1)
+                row += 1
+            row += 1
+        layout.addItem(
+            QSpacerItem(20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding),
+            row,
+            0,
+            1,
+            2,
+        )
+        return panel
+
+    def _create_equity_chart_panel(self, parent_layout: QGridLayout):
+        df = self.plot_df
+        if df is None or df.empty:
+            return
+        date_strings = df["datetime"].dt.strftime("%Y-%m-%d").tolist()
+        bottom_axis, left_axis = (
+            DateAxis(x_values=date_strings, orientation="bottom"),
+            FullValueAxis(orientation="left"),
+        )
+        if 0 < len(date_strings) <= 3:
+            bottom_axis.setTicks([[(i, date) for i, date in enumerate(date_strings)]])
+
+        plot_widget = pg.PlotWidget(
+            axisItems={"bottom": bottom_axis, "left": left_axis}
+        )
+        plot_widget.setBackground("#f7f7f7")
+        plot_widget.showGrid(x=True, y=True, alpha=0.3)
+        plot_widget.setTitle("资金曲线", color="k", size="16pt", bold=True)
+        plot_widget.setLabel("left", "权益 (元)", **{"color": "k", "font-size": "12pt"})
+        plot_widget.getPlotItem().layout.setContentsMargins(10, 25, 10, 10)
+
+        x_axis_data, equity_curve_data = (
+            list(range(len(df.index))),
+            df["PortfolioValue"].tolist(),
+        )
+        self.plot_curve = plot_widget.plot(
+            x_axis_data,
+            equity_curve_data,
+            pen=pg.mkPen("#007bff", width=2.5, style=Qt.SolidLine),
+            name="资金曲线",
+        )
+
+        if not df.empty:
+            max_idx, min_idx = (
+                df["PortfolioValue"].idxmax(),
+                df["PortfolioValue"].idxmin(),
+            )
+            max_val, min_val = (
+                df.loc[max_idx, "PortfolioValue"],
+                df.loc[min_idx, "PortfolioValue"],
+            )
+            max_pos, min_pos = df.index.get_loc(max_idx), df.index.get_loc(min_idx)
+            max_text = pg.TextItem(
+                f"峰值: {max_val:,.2f}",
+                anchor=(0.5, 1.5),
+                color="#d14545",
+                fill=pg.mkBrush(255, 255, 255, 150),
+            )
+            max_text.setPos(max_pos, max_val)
+            plot_widget.addItem(max_text)
+            min_text = pg.TextItem(
+                f"谷值: {min_val:,.2f}",
+                anchor=(0.5, -0.5),
+                color="#3f993f",
+                fill=pg.mkBrush(255, 255, 255, 150),
+            )
+            min_text.setPos(min_pos, min_val)
+            plot_widget.addItem(min_text)
+
+        view_box = plot_widget.getViewBox()
+        view_box.setMouseEnabled(x=True, y=False)
+        margin = 2
+        initial_x_min = -margin if not equity_curve_data else -margin
+        initial_x_max = (
+            margin if not equity_curve_data else len(equity_curve_data) - 1 + margin
+        )
+        plot_widget.setXRange(initial_x_min, initial_x_max, padding=0)
+        self._adapt_equity_y_axis(
+            view_box, initial_x_min, initial_x_max, equity_curve_data
+        )
+
+        y_adapter = lambda vb, x_min, x_max: self._adapt_equity_y_axis(
+            vb, x_min, x_max, equity_curve_data
+        )
+        view_box.sigXRangeChanged.connect(
+            lambda vb, x_range: self._handle_bounded_x_range_change(
+                vb,
+                x_range,
+                len(equity_curve_data),
+                margin=2,
+                min_display_range=3.0,
+                y_adapter_func=y_adapter,
+            )
+        )
+
+        self.vLine, self.hLine, self.info_label = self._create_crosshair_items(
+            plot_widget
+        )
+        self.proxy = pg.SignalProxy(
+            plot_widget.scene().sigMouseMoved, rateLimit=60, slot=self.mouse_moved
+        )
+        parent_layout.addWidget(plot_widget, 0, 1)
+
+    def _adapt_equity_y_axis(self, view_box, x_min, x_max, equity_data):
+        visible_equity = self._get_visible_data_slice(x_min, x_max, equity_data)
+        if not visible_equity:
+            return
+        y_min, y_max = min(visible_equity), max(visible_equity)
+        equity_range = y_max - y_min
+        padding = (
+            (y_min * 0.1 if y_min != 0 else 1)
+            if equity_range <= 0
+            else equity_range * 0.1
+        )
+        view_box.setYRange(y_min - padding, y_max + padding, padding=0)
+
+    def mouse_moved(self, event):
+        pos = event[0]
+        if self.plot_curve is None or not self.plot_curve.isVisible():
+            return
+        vb = self.plot_curve.getViewBox()
+        if vb.sceneBoundingRect().contains(pos):
+            mousePoint = vb.mapSceneToView(pos)
+            index = int(round(mousePoint.x())) if not np.isnan(mousePoint.x()) else -1
+            if 0 <= index < len(self.result.df.index):
+                self.vLine.show()
+                self.hLine.show()
+                date_str = self.result.df.iloc[index]["datetime"].strftime("%Y-%m-%d")
+                equity_value = self.result.df["PortfolioValue"].iloc[index]
+                self.vLine.setPos(index)
+                self.hLine.setPos(mousePoint.y())
+                self.info_label.setPlainText(f"日期: {date_str}\n权益: {equity_value:,.2f}")
+                self.info_label.adjustSize()
+                self._update_tooltip_position(self.info_label, pos, vb)
+                self.info_label.show()
+            else:
+                self.info_label.hide()
+                self.vLine.hide()
+                self.hLine.hide()
+        else:
+            self.info_label.hide()
+            self.vLine.hide()
+            self.hLine.hide()
+
+    def _create_daily_pnl_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(10, 20, 10, 10)
+        df = self.plot_df
+        if df is None or df.empty:
+            layout.addWidget(
+                QLabel(
+                    "无有效交易日数据",
+                    alignment=Qt.AlignCenter,
+                    styleSheet="QLabel { font-size: 28px; font-weight: bold; }",
+                )
+            )
+            return tab
+
+        date_strings = df["datetime"].dt.strftime("%Y-%m-%d").tolist()
+        axis = DateAxis(x_values=date_strings, orientation="bottom")
+        if 0 < len(date_strings) <= 3:
+            axis.setTicks([[(i, date) for i, date in enumerate(date_strings)]])
+
+        plot_widget = pg.PlotWidget(axisItems={"bottom": axis})
+        plot_widget.setTitle("每日收益（含手续费）", color="k", size="16pt", bold=True)
+        plot_widget.setBackground("#f7f7f7")
+        plot_widget.showGrid(x=True, y=True, alpha=0.3)
+        plot_widget.getPlotItem().layout.setContentsMargins(10, 25, 10, 10)
+        view_box = plot_widget.getViewBox()
+        view_box.setMouseEnabled(x=True, y=False)
+
+        x, y = list(range(len(df.index))), df["PnL"].values.tolist()
+        data_length, margin = len(y), 1
+        initial_x_min = -margin if not y else -margin
+        initial_x_max = margin if not y else data_length - 1 + margin
+        plot_widget.setXRange(initial_x_min, initial_x_max, padding=0)
+        self._adapt_pnl_y_axis(view_box, initial_x_min, initial_x_max, y)
+
+        y_adapter = lambda vb, x_min, x_max: self._adapt_pnl_y_axis(vb, x_min, x_max, y)
+        view_box.sigXRangeChanged.connect(
+            lambda vb, x_range: self._handle_bounded_x_range_change(
+                vb, x_range, data_length, margin, 3.0, y_adapter
+            )
+        )
+
+        plot_widget.addItem(
+            pg.BarGraphItem(
+                x=x,
+                height=y,
+                width=0.6,
+                brushes=["#d14545" if val >= 0 else "#3f993f" for val in y],
+            )
+        )
+
+        vLine, hLine, pnl_info_label = self._create_crosshair_items(plot_widget)
+
+        def mouse_moved_pnl(event):
+            pos, vb = event, plot_widget.getViewBox()
+            if vb.sceneBoundingRect().contains(pos):
+                index = int(vb.mapSceneToView(pos).x() + 0.5)
+                if 0 <= index < len(date_strings):
+                    vLine.show()
+                    hLine.show()
+                    vLine.setPos(index)
+                    hLine.setPos(y[index])
+                    pnl_info_label.setPlainText(
+                        f"日期: {date_strings[index]}\n收益: {y[index]:,.2f}"
+                    )
+                    pnl_info_label.adjustSize()
+                    self._update_tooltip_position(pnl_info_label, pos, vb)
+                    pnl_info_label.show()
+                else:
+                    pnl_info_label.hide()
+                    vLine.hide()
+                    hLine.hide()
+            else:
+                pnl_info_label.hide()
+                vLine.hide()
+                hLine.hide()
+
+        plot_widget.scene().sigMouseMoved.connect(mouse_moved_pnl)
+        plot_widget.setLabel("left", "盈亏 (元)", **{"color": "k", "font-size": "12pt"})
+        layout.addWidget(plot_widget)
+        return tab
+
+    def _adapt_pnl_y_axis(self, view_box, x_min, x_max, pnl_data):
+        visible_pnl = self._get_visible_data_slice(x_min, x_max, pnl_data)
+        if not visible_pnl:
+            return
+        y_min, y_max = min(visible_pnl), max(visible_pnl)
+        if y_min >= 0:
+            padding = y_max * 0.05 if y_max > 0 else 0.1
+            y_min, y_max = max(0, y_min - padding), y_max + padding
+        elif y_max <= 0:
+            padding = abs(y_min) * 0.05 if y_min < 0 else 0.1
+            y_min, y_max = y_min - padding, min(0, y_max + padding)
+        else:
+            y_min -= abs(y_min) * 0.05
+            y_max += y_max * 0.05
+        view_box.setYRange(y_min, y_max, padding=0)
+
+    def _process_trades_for_pnl(self) -> list:
+        processed_list, positions = [], {}
+        multipliers = {
+            iid: data.volume_multiple
+            for iid, data in self.result.instruments_data.items()
+        }
+        for trade in self.result.trade_log:
+            instrument, is_opening, is_buy = (
+                trade.instrument_id,
+                trade.offset == "0",
+                trade.direction == "0",
+            )
+            multiplier = multipliers.get(instrument, 1)
+            trade_data = {
+                "order_id": trade.order_id,
+                "time": trade.trade_time,
+                "instrument": instrument,
+                "volume": trade.volume,
+                "order_price": trade.order_price,
+                "price": trade.trade_price,
+                "turnover": trade.trade_price * abs(trade.volume) * multiplier,
+                "pnl": 0.0,
+                "fee": getattr(trade, "fee", 0.0),
+                "memo": trade.memo,
+            }
+            is_traded = trade.trade_price > 0 and trade.order_id != -1
+
+            if is_opening:
+                action = "买开" if is_buy else "卖开"
+                if is_traded:
+                    positions.setdefault(instrument, deque()).append(
+                        {"price": trade.trade_price, "volume": trade.volume}
+                    )
+            else:
+                action = "买平" if is_buy else "卖平"
+                if is_traded and instrument in positions and positions[instrument]:
+                    pnl, volume_to_close, open_positions = (
+                        0.0,
+                        abs(trade.volume),
+                        positions[instrument],
+                    )
+                    while volume_to_close > 0 and open_positions:
+                        oldest_open = open_positions[0]
+                        match_volume = min(volume_to_close, oldest_open["volume"])
+                        price_diff = trade.trade_price - oldest_open["price"]
+                        pnl += (
+                            (price_diff if not is_buy else -price_diff)
+                            * match_volume
+                            * multipliers.get(instrument, 1)
+                        )
+                        volume_to_close -= match_volume
+                        oldest_open["volume"] -= match_volume
+                        if oldest_open["volume"] == 0:
+                            open_positions.popleft()
+                    trade_data["pnl"] = pnl
+            trade_data["action"] = action if "action" in locals() else "未知"
+            processed_list.append(trade_data)
+        return processed_list
+
+    def _create_trade_stats_panel(self, processed_trades: list) -> QWidget:
+        panel = QFrame()
+        panel.setFrameShape(QFrame.StyledPanel)
+        panel.setStyleSheet(
+            "QFrame { background-color: #f7f7f7; border: 1px solid #e0e0e0; border-radius: 8px; padding: 15px; } QLabel { background-color: transparent; border: none; padding: 3px; }"
+        )
+        layout = QVBoxLayout(panel)
+        layout.setSpacing(12)
+
+        checkbox_layout = QHBoxLayout()
+        checkbox_layout.setSpacing(20)
+
+        self.show_untraded_checkbox = QCheckBox("显示未成交报单")
+        self.show_untraded_checkbox.setChecked(True)
+        self.show_untraded_checkbox.setFont(QFont("Microsoft YaHei", 12, QFont.Bold))
+        self.show_untraded_checkbox.setStyleSheet("""
+            QCheckBox { 
+                padding: 5px 10px;
+                min-height: 30px;
+            }
+        """)
+        self.show_untraded_checkbox.stateChanged.connect(self._update_trade_table)
+        checkbox_layout.addWidget(self.show_untraded_checkbox)
+
+        self.instrument_toggle_button = QPushButton("隐藏合约")
+        self.instrument_toggle_button.setFont(QFont("Microsoft YaHei", 12))
+        self.instrument_toggle_button.setStyleSheet("""
+            QPushButton {
+                background-color: #f0f0f0;
+                border: 1px solid #d0d0d0;
+                border-radius: 4px;
+                padding: 5px 15px;
+                min-height: 30px;
+            }
+            QPushButton:hover {
+                background-color: #e0e0e0;
+            }
+        """)
+        self.instrument_toggle_button.clicked.connect(self._toggle_instrument_visibility)
+        checkbox_layout.addWidget(self.instrument_toggle_button)
+
+        layout.addLayout(checkbox_layout)
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setFrameShadow(QFrame.Sunken)
+        line.setStyleSheet("background-color: #e0e0e0; margin: 8px 0;")
+        layout.addWidget(line)
+        stats_layout = QGridLayout()
+        stats_layout.setVerticalSpacing(8)
+        stats_layout.setHorizontalSpacing(15)
+        # 设置第一列（名称列）的最小宽度，确保文字完整显示
+        stats_layout.setColumnMinimumWidth(0, 150)
+        pnl_values = [
+            t["pnl"]
+            for t in processed_trades
+            if isinstance(t["pnl"], (int, float)) and t["pnl"] != 0.0
+        ]
+        total_trades = len(pnl_values)
+
+        profits, losses = [], []
+        if total_trades > 0:
+            profits, losses = (
+                [p for p in pnl_values if p > 0],
+                [p for p in pnl_values if p < 0],
+            )
+            win_count, loss_count = len(profits), len(losses)
+            win_rate = win_count / total_trades if total_trades > 0 else 0
+            total_profit, total_loss = sum(profits), sum(losses)
+            avg_profit = total_profit / win_count if win_count > 0 else 0
+            avg_loss = total_loss / loss_count if loss_count > 0 else 0
+
+            profit_factor = (
+                "∞"
+                if total_loss == 0
+                else (
+                    "0.00"
+                    if win_count == 0
+                    else f"{abs((total_profit/win_count) / (total_loss/loss_count)):.2f}"
+                )
+            )
+            avg_pnl = sum(pnl_values) / total_trades
+
+            max_consecutive_wins = 0
+            max_consecutive_losses = 0
+            current_wins = 0
+            current_losses = 0
+
+            closing_trades_pnl = [t["pnl"] for t in processed_trades if t["pnl"] != 0.0]
+
+            for pnl in closing_trades_pnl:
+                if pnl > 0:
+                    current_wins += 1
+                    current_losses = 0
+                elif pnl < 0:
+                    current_losses += 1
+                    current_wins = 0
+
+                max_consecutive_wins = max(max_consecutive_wins, current_wins)
+                max_consecutive_losses = max(max_consecutive_losses, current_losses)
+
+            avg_win_hold_time, avg_loss_hold_time = self._calc_avg_hold_time(processed_trades)
+
+            risk_reward_ratio = abs(avg_profit / avg_loss) if avg_loss != 0 else 0
+
+            expectancy = (win_rate * avg_profit + (1 - win_rate) * avg_loss) if total_trades > 0 else 0
+
+            profit_factor_calc = abs(total_profit / total_loss) if total_loss != 0 else 0
+
+            sharpe_approx = self.result.sharpe_ratio()
+
+            win_rate_stability = "稳定" if max_consecutive_losses <= 3 else "一般" if max_consecutive_losses <= 5 else "差"
+
+        else:
+            (
+                avg_pnl,
+                win_rate,
+                total_profit,
+                total_loss,
+                profit_factor,
+                win_count,
+                loss_count,
+                avg_profit,
+                avg_loss,
+                max_consecutive_wins,
+                max_consecutive_losses,
+                avg_win_hold_time,
+                avg_loss_hold_time,
+                risk_reward_ratio,
+                expectancy,
+                profit_factor_calc,
+                sharpe_approx,
+                win_rate_stability,
+            ) = (0, 0, 0, 0, "N/A", 0, 0, 0, 0, 0, 0, "N/A", "N/A", 0, 0, 0, 0, "N/A")
+
+        stats = {
+            "平仓交易次数": f"{total_trades}",
+            "胜率": f"{win_rate:.2%}",
+            "盈利次数": f"{win_count}",
+            "亏损次数": f"{loss_count}",
+            "持平次数": f"{total_trades - win_count - loss_count}",
+            "最大持续盈利次数": f"{max_consecutive_wins}",
+            "最大持续亏损次数": f"{max_consecutive_losses}",
+            "胜率稳定性": win_rate_stability,
+            "": "",
+            "总盈利": f"{total_profit:,.2f}",
+            "总亏损": f"{total_loss:,.2f}",
+            "净盈亏": f"{total_profit + total_loss:,.2f}",
+            "平均每次盈亏": f"{avg_pnl:,.2f}",
+            "盈亏比": profit_factor,
+            "收益风险比": f"{risk_reward_ratio:.2f}",
+            "期望值": f"{expectancy:,.2f}",
+            "夏普比率(近似)": f"{sharpe_approx:.2f}",
+            "Sortino比率": f"{self.result.sortino_ratio():.2f}",
+            " ": "",
+            "平均每次盈利": f"{avg_profit:,.2f}",
+            "平均每次亏损": f"{avg_loss:,.2f}",
+            "单次最大盈利": f"{max(profits):,.2f}" if profits else "N/A",
+            "单次最大亏损": f"{min(losses):,.2f}" if losses else "N/A",
+            "  ": "",
+            "盈利交易平均持仓": avg_win_hold_time if total_trades > 0 else "N/A",
+            "亏损交易平均持仓": avg_loss_hold_time if total_trades > 0 else "N/A",
+        }
+        row = 0
+        for name, value in stats.items():
+            name_label, value_label = QLabel(name), QLabel(value)
+            name_label.setFont(QFont("Microsoft YaHei", 10))
+            name_label.setStyleSheet("color: #666;")
+            value_label.setFont(QFont("Arial", 10, QFont.Bold))
+            value_label.setAlignment(Qt.AlignRight)
+            stats_layout.addWidget(name_label, row, 0)
+            stats_layout.addWidget(value_label, row, 1)
+            row += 1
+            if name == "最大持续亏损次数":
+                spacer = QSpacerItem(20, 30, QSizePolicy.Minimum, QSizePolicy.Fixed)
+                stats_layout.addItem(spacer, row, 0, 1, 2)
+                row += 1
+        layout.addLayout(stats_layout)
+        layout.addStretch()
+        panel.setMinimumWidth(320)
+        panel.setMinimumHeight(700)
+        return panel
+
+    def _calc_avg_hold_time(self, processed_trades: list) -> tuple:
+        from datetime import datetime
+
+        open_trades = {}
+        win_hold_times = []
+        loss_hold_times = []
+
+        for trade in processed_trades:
+            action = trade.get("action", "")
+            time_str = trade.get("time", "")
+            pnl = trade.get("pnl", 0)
+
+            if not time_str:
+                continue
+
+            try:
+                if isinstance(time_str, str):
+                    dt = datetime.strptime(time_str, "%Y%m%d %H:%M:%S")
+                else:
+                    dt = time_str
+            except:
+                continue
+
+            if "开" in action:
+                key = f"{trade.get('instrument', '')}_{trade.get('order_id', '')}"
+                open_trades[key] = dt
+            elif "平" in action and pnl != 0:
+                if open_trades:
+                    open_dt = list(open_trades.values())[-1]
+                    hold_time = (dt - open_dt).total_seconds() / 60
+
+                    if pnl > 0:
+                        win_hold_times.append(hold_time)
+                    elif pnl < 0:
+                        loss_hold_times.append(hold_time)
+
+                    if open_trades:
+                        open_trades.popitem()
+
+        avg_win = f"{sum(win_hold_times)/len(win_hold_times):.1f}分钟" if win_hold_times else "N/A"
+        avg_loss = f"{sum(loss_hold_times)/len(loss_hold_times):.1f}分钟" if loss_hold_times else "N/A"
+
+        return avg_win, avg_loss
+
+    def _create_trade_log_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QHBoxLayout(tab)
+        self.all_processed_trades = self._process_trades_for_pnl()
+        stats_panel = self._create_trade_stats_panel(self.all_processed_trades)
+        layout.addWidget(stats_panel)
+        self.trade_table = QTableWidget()
+        self._setup_trade_table()
+        self._populate_trade_table(self.all_processed_trades)
+        layout.addWidget(self.trade_table)
+        layout.setStretchFactor(stats_panel, 1)
+        layout.setStretchFactor(self.trade_table, 3)
+        return tab
+
+    def _setup_trade_table(self):
+        headers = [
+            "报单号",
+            "时间",
+            "标的",
+            "交易",
+            "数量",
+            "报单价",
+            "成交价",
+            "成交额",
+            "盈亏",
+            "手续费",
+            "备注",
+        ]
+        self.trade_table.setColumnCount(len(headers))
+        self.trade_table.setHorizontalHeaderLabels(headers)
+        self.trade_table.setSortingEnabled(True)
+        self.trade_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.trade_table.verticalHeader().setVisible(False)
+
+        header = self.trade_table.horizontalHeader()
+        header.setSectionsMovable(False)
+
+        for col in range(len(headers)):
+            header.setSectionResizeMode(col, QHeaderView.Interactive)
+
+        header.sectionResized.connect(self._on_column_resized)
+        header.sectionClicked.connect(self._on_header_clicked)
+
+        self.trade_table.model().dataChanged.connect(self._on_data_changed)
+
+        self._setup_filter_buttons()
+
+    def _on_column_resized(self, logical_index, old_size, new_size):
+        self._user_adjusted_columns.add(logical_index)
+        self._column_widths[logical_index] = new_size
+
+    def _on_data_changed(self, top_left, bottom_right, roles):
+        for col in range(top_left.column(), bottom_right.column() + 1):
+            if col not in self._user_adjusted_columns:
+                self._adjust_column_width(col)
+
+    def _adjust_column_width(self, col):
+        header = self.trade_table.horizontalHeader()
+        max_width = 0
+        font_metrics = self.trade_table.fontMetrics()
+
+        header_text = self.trade_table.horizontalHeaderItem(col).text()
+        header_width = font_metrics.width(header_text) + 40
+        max_width = max(max_width, header_width)
+
+        for row in range(self.trade_table.rowCount()):
+            item = self.trade_table.item(row, col)
+            if item:
+                text = item.text()
+                text_width = font_metrics.width(text) + 30
+                max_width = max(max_width, text_width)
+
+        max_width = min(max_width, 300)
+        max_width = max(max_width, 80)
+
+        visual_margin = 20
+        final_width = max_width + visual_margin
+
+        if col not in self._user_adjusted_columns:
+            header.resizeSection(col, final_width)
+            self._column_widths[col] = final_width
+
+    def _auto_adjust_all_columns(self):
+        for col in range(self.trade_table.columnCount()):
+            if col not in self._user_adjusted_columns:
+                self._adjust_column_width(col)
+
+    def _on_header_clicked(self, logical_index):
+        if self._instrument_hidden:
+            QMessageBox.warning(
+                self,
+                "提示",
+                "无法在隐藏状态下进行排序操作"
+            )
+
+    def _setup_filter_buttons(self):
+        header = self.trade_table.horizontalHeader()
+        for col in range(self.trade_table.columnCount()):
+            btn = FilterButton(header)
+            btn.clicked.connect(lambda checked, c=col: self._show_filter_menu(c))
+            self._filter_buttons[col] = btn
+        self._update_filter_button_positions()
+
+    def _update_filter_button_positions(self):
+        header = self.trade_table.horizontalHeader()
+        for col, btn in self._filter_buttons.items():
+            x = header.sectionPosition(col) + header.sectionSize(col) - 18
+            y = (header.height() - 16) // 2
+            btn.move(x, y)
+            btn.setVisible(header.sectionSize(col) > 40)
+
+    def _show_filter_menu(self, col):
+        values = set()
+        for row in range(self.trade_table.rowCount()):
+            item = self.trade_table.item(row, col)
+            if item:
+                values.add(item.text())
+
+        sorted_values = sorted(values, key=lambda x: (x == "--", x))
+
+        def on_confirm(selected, all_checked):
+            if all_checked:
+                self._column_filters.pop(col, None)
+            else:
+                self._column_filters[col] = selected
+            self._apply_filters()
+            self._update_filter_button_style(col)
+
+        popup = FilterPopup(
+            sorted_values, self._column_filters.get(col), on_confirm, self
+        )
+        pos = self._filter_buttons[col].mapToGlobal(
+            self._filter_buttons[col].rect().bottomLeft()
+        )
+        popup.move(pos)
+        popup.show()
+
+    def _toggle_all_filter(self, actions):
+        all_checked = all(action.isChecked() for action in actions)
+        for action in actions:
+            action.setChecked(not all_checked)
+
+    def _filter_menu_search(self, actions, text):
+        lower = text.lower()
+        for action in actions:
+            action.setVisible(lower in action.text().lower())
+
+    def _update_filter_button_style(self, col):
+        btn = self._filter_buttons.get(col)
+        if not btn:
+            return
+        btn.set_active(col in self._column_filters)
+
+    def _apply_filters(self):
+        self.trade_table.setSortingEnabled(False)
+        for row in range(self.trade_table.rowCount()):
+            show = True
+            for col, allowed in self._column_filters.items():
+                item = self.trade_table.item(row, col)
+                if item and item.text() not in allowed:
+                    show = False
+                    break
+            self.trade_table.setRowHidden(row, not show)
+        self.trade_table.setSortingEnabled(True)
+
+    def _toggle_instrument_visibility(self):
+        self._instrument_hidden = not self._instrument_hidden
+
+        if self._instrument_hidden:
+            header = self.trade_table.horizontalHeader()
+            self._saved_sort_column = header.sortIndicatorSection()
+            self._saved_sort_order = header.sortIndicatorOrder()
+
+            self.trade_table.setSortingEnabled(False)
+
+            self._original_instruments.clear()
+
+            for row in range(self.trade_table.rowCount()):
+                item = self.trade_table.item(row, 2)
+                if item:
+                    self._original_instruments.append((row, item.text()))
+                    item.setText('*' * len(item.text()))
+
+            self.instrument_toggle_button.setText("显示标的")
+        else:
+            for saved_row, original_text in self._original_instruments:
+                item = self.trade_table.item(saved_row, 2)
+                if item:
+                    item.setText(original_text)
+
+            self._original_instruments.clear()
+
+            self.trade_table.setSortingEnabled(True)
+            if self._saved_sort_column >= 0:
+                self.trade_table.sortByColumn(self._saved_sort_column, self._saved_sort_order)
+
+            self.instrument_toggle_button.setText("隐藏标的")
+
+    def _populate_trade_table(self, trades_data):
+        self.trade_table.setSortingEnabled(False)
+        self.trade_table.setRowCount(len(trades_data))
+        self._instrument_hidden = False
+        self._original_instruments.clear()
+        if hasattr(self, 'instrument_toggle_button'):
+            self.instrument_toggle_button.setText("隐藏标的")
+        for row, trade in enumerate(trades_data):
+            action, color = trade["action"], QColor("#666666")
+            if "买" in action:
+                color, display_action = QColor("#ff4444"), "▲买入"
+            elif "卖" in action:
+                color, display_action = QColor("#44aa44"), "▼卖出"
+            else:
+                display_action = action
+
+            price_text, pnl_text, fee_text, turnover_text = "--", "--", "--", "--"
+            if trade["order_id"] != -1:
+                price_text, fee_text = f"{trade['price']:.3f}", f"{trade['fee']:,.2f}"
+                turnover_text = f"{trade['turnover']:,.2f}"
+                if trade["pnl"] != 0:
+                    pnl_text = f"{trade['pnl']:,.2f}"
+
+            time_str = "N/A"
+            if trade["time"]:
+                time_str = trade["time"].strftime("%Y-%m-%d %H:%M:%S")
+
+            items_to_add = [
+                str(trade["order_id"]),
+                time_str,
+                trade["instrument"],
+                display_action,
+                str(trade["volume"]),
+                f"{trade['order_price']:.3f}",
+                price_text,
+                turnover_text,
+                pnl_text,
+                fee_text,
+                trade["memo"],
+            ]
+            for col, item_text in enumerate(items_to_add):
+                item = QTableWidgetItem(item_text)
+                item.setTextAlignment(Qt.AlignCenter)
+                if col == 3:
+                    item.setForeground(color)
+                if col == 8 and isinstance(trade["pnl"], (int, float)):
+                    if trade["pnl"] > 0:
+                        item.setForeground(QColor("#d14545"))
+                    elif trade["pnl"] < 0:
+                        item.setForeground(QColor("#3f993f"))
+                self.trade_table.setItem(row, col, item)
+        self.trade_table.setSortingEnabled(True)
+        self._auto_adjust_all_columns()
+        self._update_filter_button_positions()
+        self._apply_filters()
+
+    def _create_benchmark_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(10, 20, 10, 10)
+        df = self.plot_df
+        if df is None or df.empty:
+            layout.addWidget(
+                QLabel(
+                    "无有效交易日数据",
+                    alignment=Qt.AlignCenter,
+                    styleSheet="QLabel { font-size: 28px; font-weight: bold; }",
+                )
+            )
+            return tab
+
+        benchmark_df = self.result.benchmark_df
+        if self.result.trade_start_date and benchmark_df is not None and not benchmark_df.empty:
+            trade_start_dt = pd.to_datetime(self.result.trade_start_date)
+            benchmark_df = benchmark_df[benchmark_df.index >= trade_start_dt].copy()
+        benchmark_symbol = self.result.benchmark_symbol or "000300.SH"
+
+        benchmark_display_name = self.BENCHMARK_NAME_MAP.get(benchmark_symbol, benchmark_symbol)
+
+        if benchmark_df is None or benchmark_df.empty:
+            layout.addWidget(
+                QLabel(
+                    f"无基准（{benchmark_display_name}）数据，请检查QMT数据是否同步",
+                    alignment=Qt.AlignCenter,
+                    styleSheet="QLabel { font-size: 18px; font-weight: bold; color: #d14545; }",
+                )
+            )
+            return tab
+
+        strategy_dates = df["datetime"].tolist()
+        benchmark_dates = benchmark_df.index.tolist()
+
+        benchmark_close_map = {}
+        for dt in benchmark_dates:
+            if hasattr(dt, "date"):
+                benchmark_close_map[dt.date()] = benchmark_df.loc[dt, "close"]
+            else:
+                benchmark_close_map[pd.Timestamp(dt).date()] = benchmark_df.loc[dt, "close"]
+
+        aligned_benchmark = []
+        for dt in strategy_dates:
+            if hasattr(dt, "date"):
+                trade_date = dt.date()
+            else:
+                trade_date = pd.Timestamp(dt).date()
+            if trade_date in benchmark_close_map:
+                aligned_benchmark.append(benchmark_close_map[trade_date])
+            else:
+                aligned_benchmark.append(None)
+
+        first_valid_idx = None
+        last_valid_idx = None
+        for i, v in enumerate(aligned_benchmark):
+            if v is not None:
+                if first_valid_idx is None:
+                    first_valid_idx = i
+                last_valid_idx = i
+
+        if first_valid_idx is None:
+            layout.addWidget(
+                QLabel(
+                    f"策略交易日期范围内无基准（{benchmark_display_name}）数据",
+                    alignment=Qt.AlignCenter,
+                    styleSheet="QLabel { font-size: 18px; font-weight: bold; color: #d14545; }",
+                )
+            )
+            return tab
+
+        valid_count = sum(1 for v in aligned_benchmark if v is not None)
+        total_count = len(aligned_benchmark)
+        coverage = valid_count / total_count if total_count > 0 else 0
+
+        if coverage < 0.5:
+            warning_label = QLabel(
+                f"警告：基准数据（{benchmark_display_name}）覆盖率仅 {coverage:.1%}，"
+                f"实际数据 {valid_count}/{total_count} 天，图表可能显示不正确"
+            )
+            warning_label.setAlignment(Qt.AlignCenter)
+            warning_label.setStyleSheet(
+                "QLabel { font-size: 14px; font-weight: bold; color: #d14545; padding: 10px; }"
+            )
+            layout.addWidget(warning_label)
+
+        for i in range(first_valid_idx):
+            aligned_benchmark[i] = aligned_benchmark[first_valid_idx]
+        for i in range(first_valid_idx + 1, len(aligned_benchmark)):
+            if aligned_benchmark[i] is None:
+                aligned_benchmark[i] = aligned_benchmark[i - 1]
+
+        date_strings = df["datetime"].dt.strftime("%Y-%m-%d").tolist()
+        axis = DateAxis(x_values=date_strings, orientation="bottom")
+        if 0 < len(date_strings) <= 3:
+            axis.setTicks([[(i, date) for i, date in enumerate(date_strings)]])
+
+        plot_widget = pg.PlotWidget(axisItems={"bottom": axis})
+        plot_widget.setTitle("基准对比", color="k", size="16pt", bold=True)
+        plot_widget.setBackground("#f7f7f7")
+        plot_widget.showGrid(x=True, y=True, alpha=0.3)
+        plot_widget.getPlotItem().layout.setContentsMargins(10, 25, 10, 10)
+        view_box = plot_widget.getViewBox()
+        view_box.setMouseEnabled(x=True, y=False)
+
+        x = list(range(len(df.index)))
+        strategy_equity = df["PortfolioValue"].tolist()
+        initial_equity = strategy_equity[0]
+
+        strategy_net_value = [eq / initial_equity for eq in strategy_equity]
+
+        benchmark_initial = aligned_benchmark[0]
+        benchmark_net_value = [b / benchmark_initial for b in aligned_benchmark]
+
+        excess_return = [s / b for s, b in zip(strategy_net_value, benchmark_net_value)]
+
+        strategy_curve = plot_widget.plot(
+            x,
+            strategy_net_value,
+            pen=pg.mkPen("#dc3545", width=2.5, style=Qt.SolidLine),
+            name="策略净值",
+        )
+        benchmark_curve = plot_widget.plot(
+            x,
+            benchmark_net_value,
+            pen=pg.mkPen("#007bff", width=2.0, style=Qt.SolidLine),
+            name=benchmark_display_name,
+        )
+        excess_curve = plot_widget.plot(
+            x,
+            excess_return,
+            pen=pg.mkPen("#ff7f0e", width=1.5, style=Qt.SolidLine),
+            name="超额收益",
+        )
+
+        compare_curves = []
+        compare_net_values = {}
+        compare_colors = ["#28a745", "#6f42c1", "#fd7e14", "#20c997", "#e83e8c", "#17a2b8"]
+        if hasattr(self.result, "compare_data") and self.result.compare_data:
+            for idx, (symbol, cmp_df) in enumerate(self.result.compare_data.items()):
+                cmp_close_map = {}
+                for dt in cmp_df.index:
+                    if hasattr(dt, "date"):
+                        cmp_close_map[dt.date()] = cmp_df.loc[dt, "close"]
+                    else:
+                        cmp_close_map[pd.Timestamp(dt).date()] = cmp_df.loc[dt, "close"]
+                aligned_cmp = []
+                for dt in strategy_dates:
+                    if hasattr(dt, "date"):
+                        trade_date = dt.date()
+                    else:
+                        trade_date = pd.Timestamp(dt).date()
+                    if trade_date in cmp_close_map:
+                        aligned_cmp.append(cmp_close_map[trade_date])
+                    else:
+                        aligned_cmp.append(None)
+                first_valid = None
+                for i, v in enumerate(aligned_cmp):
+                    if v is not None:
+                        first_valid = i
+                        break
+                if first_valid is not None:
+                    for i in range(first_valid):
+                        aligned_cmp[i] = aligned_cmp[first_valid]
+                    for i in range(first_valid + 1, len(aligned_cmp)):
+                        if aligned_cmp[i] is None:
+                            aligned_cmp[i] = aligned_cmp[i - 1]
+                    cmp_initial = aligned_cmp[0]
+                    cmp_nv = [c / cmp_initial for c in aligned_cmp]
+                    color = compare_colors[idx % len(compare_colors)]
+                    cmp_curve = plot_widget.plot(
+                        x,
+                        cmp_nv,
+                        pen=pg.mkPen(color, width=1.5, style=Qt.SolidLine),
+                        name=symbol,
+                    )
+                    compare_curves.append((symbol, cmp_curve, cmp_nv, color))
+                    compare_net_values[symbol] = cmp_nv
+
+        legend = ClickableLegend()
+        legend.setParentItem(plot_widget.getPlotItem().getViewBox())
+        legend.setBrush(QBrush(QColor("#f0f0f0")))
+        legend.setPen(QPen(QColor("#999999"), 1))
+        legend.setLabelTextColor(QColor("#333333"))
+        legend.setLabelTextSize("10pt")
+        legend.setOffset((10, 10))
+        plot_widget.getPlotItem().legend = legend
+        legend.addItem(strategy_curve, "策略净值")
+        legend.addItem(benchmark_curve, benchmark_display_name)
+        legend.addItem(excess_curve, "超额收益")
+        for symbol, cmp_curve, _, _ in compare_curves:
+            legend.addItem(cmp_curve, symbol)
+        plot_widget.setLabel("left", "净值 / 超额收益", **{"color": "k", "font-size": "12pt"})
+
+        margin = 2
+        initial_x_min = -margin
+        initial_x_max = len(x) - 1 + margin if x else margin
+        plot_widget.setXRange(initial_x_min, initial_x_max, padding=0)
+
+        vLine, hLine, info_label = self._create_crosshair_items(plot_widget)
+
+        def mouse_moved_benchmark(event):
+            pos = event
+            vb = plot_widget.getViewBox()
+            if vb.sceneBoundingRect().contains(pos):
+                mousePoint = vb.mapSceneToView(pos)
+                index = int(round(mousePoint.x())) if not np.isnan(mousePoint.x()) else -1
+                if 0 <= index < len(df.index):
+                    vLine.show()
+                    hLine.show()
+                    vLine.setPos(index)
+                    hLine.setPos(mousePoint.y())
+                    date_str = date_strings[index]
+                    strategy_nv = strategy_net_value[index]
+                    benchmark_nv = benchmark_net_value[index]
+                    excess = excess_return[index]
+                    tooltip_text = (
+                        f"日期: {date_str}\n"
+                        f"策略净值: {strategy_nv:.4f}\n"
+                        f"{benchmark_display_name}净值: {benchmark_nv:.4f}\n"
+                        f"超额收益: {excess:.4f}"
+                    )
+                    for symbol, _, cmp_nv, _ in compare_curves:
+                        tooltip_text += f"\n{symbol}净值: {cmp_nv[index]:.4f}"
+                    info_label.setPlainText(tooltip_text)
+                    info_label.adjustSize()
+                    self._update_tooltip_position(info_label, pos, vb)
+                    info_label.show()
+                else:
+                    info_label.hide()
+                    vLine.hide()
+                    hLine.hide()
+            else:
+                info_label.hide()
+                vLine.hide()
+                hLine.hide()
+
+        plot_widget.scene().sigMouseMoved.connect(mouse_moved_benchmark)
+        layout.addWidget(plot_widget)
+        return tab
+
+    def _update_trade_table(self):
+        if not hasattr(self, "all_processed_trades"):
+            return
+        filtered_trades = (
+            self.all_processed_trades
+            if self.show_untraded_checkbox.isChecked()
+            else [t for t in self.all_processed_trades if t["order_id"] != -1]
+        )
+        self._populate_trade_table(filtered_trades)
+
+    def _process_daily_positions(self) -> list:
+        trade_log = self.result.trade_log
+        instrument_close = self.result.instrument_close_prices or {}
+        df = self.plot_df
+        if not trade_log or df is None or df.empty:
+            return []
+
+        multipliers = {
+            iid: data.volume_multiple
+            for iid, data in self.result.instruments_data.items()
+        }
+
+        trading_dates = df["datetime"].dt.strftime("%Y-%m-%d").tolist()
+        portfolio_values = df["PortfolioValue"].tolist()
+
+        def _sort_key(t):
+            if not t.trade_time:
+                return dt_module.datetime.min
+            if isinstance(t.trade_time, dt_module.datetime):
+                return t.trade_time
+            try:
+                return pd.Timestamp(t.trade_time).to_pydatetime()
+            except Exception:
+                return dt_module.datetime.min
+
+        sorted_trades = sorted(
+            [t for t in trade_log if t.trade_price > 0 and t.order_id != -1],
+            key=_sort_key,
+        )
+
+        trades_by_date = defaultdict(list)
+        for trade in sorted_trades:
+            if trade.trade_time:
+                if hasattr(trade.trade_time, "strftime"):
+                    date_str = trade.trade_time.strftime("%Y-%m-%d")
+                else:
+                    date_str = str(trade.trade_time)[:10]
+                trades_by_date[date_str].append(trade)
+
+        positions = {}
+        prev_closes = {}
+        result = []
+
+        for i, date_str in enumerate(trading_dates):
+            for trade in trades_by_date.get(date_str, []):
+                instrument = trade.instrument_id
+                is_buy = trade.direction == "0"
+                volume = trade.volume
+                price = trade.trade_price
+
+                if instrument not in positions:
+                    positions[instrument] = {"quantity": 0, "avg_price": 0.0}
+
+                pos = positions[instrument]
+                qty = pos["quantity"]
+                avg = pos["avg_price"]
+
+                if is_buy:
+                    if qty >= 0:
+                        new_qty = qty + volume
+                        pos["avg_price"] = (avg * qty + price * volume) / new_qty if new_qty > 0 else 0.0
+                        pos["quantity"] = new_qty
+                    else:
+                        if volume >= abs(qty):
+                            remaining = volume + qty
+                            pos["quantity"] = remaining
+                            pos["avg_price"] = price if remaining > 0 else 0.0
+                        else:
+                            pos["quantity"] = qty + volume
+                else:
+                    if qty <= 0:
+                        new_qty = qty - volume
+                        pos["avg_price"] = (avg * abs(qty) + price * volume) / abs(new_qty) if new_qty < 0 else 0.0
+                        pos["quantity"] = new_qty
+                    else:
+                        if volume >= qty:
+                            remaining = volume - qty
+                            pos["quantity"] = -remaining
+                            pos["avg_price"] = price if remaining > 0 else 0.0
+                        else:
+                            pos["quantity"] = qty - volume
+
+            portfolio_value = portfolio_values[i]
+
+            for instrument in list(positions.keys()):
+                pos = positions[instrument]
+                if pos["quantity"] == 0:
+                    continue
+
+                quantity = pos["quantity"]
+                avg_price = pos["avg_price"]
+                multiplier = multipliers.get(instrument, 1)
+
+                close_prices = instrument_close.get(instrument, {})
+                close_price = close_prices.get(date_str, 0.0)
+                if close_price == 0.0:
+                    close_price = avg_price
+
+                market_value = close_price * abs(quantity) * multiplier
+
+                prev_close = prev_closes.get(instrument, 0.0)
+                if prev_close > 0:
+                    daily_pnl = (close_price - prev_close) * quantity * multiplier
+                else:
+                    daily_pnl = (close_price - avg_price) * quantity * multiplier
+
+                total_pnl = (close_price - avg_price) * quantity * multiplier
+
+                position_ratio = market_value / portfolio_value if portfolio_value > 0 else 0.0
+                pnl_ratio = total_pnl / portfolio_value if portfolio_value > 0 else 0.0
+
+                result.append({
+                    "date": date_str,
+                    "instrument": instrument,
+                    "quantity": quantity,
+                    "avg_price": avg_price,
+                    "close_price": close_price,
+                    "market_value": market_value,
+                    "daily_pnl": daily_pnl,
+                    "total_pnl": total_pnl,
+                    "position_ratio": position_ratio,
+                    "pnl_ratio": pnl_ratio,
+                })
+
+                prev_closes[instrument] = close_price
+
+        return result
+
+    def _create_daily_position_pnl_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QHBoxLayout(tab)
+
+        daily_positions = self._process_daily_positions()
+
+        stats_panel = self._create_daily_position_stats_panel(daily_positions)
+        layout.addWidget(stats_panel)
+
+        self.daily_position_table = QTableWidget()
+        self._setup_daily_position_table()
+        self._populate_daily_position_table(daily_positions)
+        layout.addWidget(self.daily_position_table)
+
+        layout.setStretchFactor(stats_panel, 1)
+        layout.setStretchFactor(self.daily_position_table, 3)
+        return tab
+
+    def _create_daily_position_stats_panel(self, daily_positions: list) -> QWidget:
+        panel = QFrame()
+        panel.setFrameShape(QFrame.StyledPanel)
+        panel.setStyleSheet(
+            "QFrame { background-color: #f7f7f7; border: 1px solid #e0e0e0; border-radius: 8px; padding: 15px; }"
+            "QLabel { background-color: transparent; border: none; padding: 3px; }"
+        )
+        layout = QVBoxLayout(panel)
+        layout.setSpacing(12)
+
+        title_label = QLabel("持仓收益统计")
+        title_label.setFont(QFont("Microsoft YaHei", 13, QFont.Bold))
+        title_label.setStyleSheet("color: #333; padding-bottom: 5px;")
+        layout.addWidget(title_label)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(20)
+
+        self.dp_instrument_toggle_button = QPushButton("隐藏标的")
+        self.dp_instrument_toggle_button.setFont(QFont("Microsoft YaHei", 12))
+        self.dp_instrument_toggle_button.setStyleSheet("""
+            QPushButton {
+                background-color: #f0f0f0;
+                border: 1px solid #d0d0d0;
+                border-radius: 4px;
+                padding: 5px 15px;
+                min-height: 30px;
+            }
+            QPushButton:hover {
+                background-color: #e0e0e0;
+            }
+        """)
+        self.dp_instrument_toggle_button.clicked.connect(self._toggle_dp_instrument_visibility)
+        btn_layout.addWidget(self.dp_instrument_toggle_button)
+
+        layout.addLayout(btn_layout)
+
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setFrameShadow(QFrame.Sunken)
+        line.setStyleSheet("background-color: #e0e0e0; margin: 8px 0;")
+        layout.addWidget(line)
+
+        stats_layout = QGridLayout()
+        stats_layout.setVerticalSpacing(8)
+        stats_layout.setHorizontalSpacing(15)
+        stats_layout.setColumnMinimumWidth(0, 150)
+
+        if daily_positions:
+            unique_dates = len(set(d["date"] for d in daily_positions))
+            unique_instruments = len(set(d["instrument"] for d in daily_positions))
+            total_daily_pnl = sum(d["daily_pnl"] for d in daily_positions if d["date"] == daily_positions[-1]["date"])
+            last_date = daily_positions[-1]["date"]
+            last_day_positions = [d for d in daily_positions if d["date"] == last_date]
+            total_market_value = sum(d["market_value"] for d in last_day_positions)
+            total_unrealized_pnl = sum(d["total_pnl"] for d in last_day_positions)
+            max_daily_pnl = max(d["daily_pnl"] for d in daily_positions)
+            min_daily_pnl = min(d["daily_pnl"] for d in daily_positions)
+
+            daily_pnls_by_date = defaultdict(float)
+            for d in daily_positions:
+                daily_pnls_by_date[d["date"]] += d["daily_pnl"]
+            win_days = sum(1 for v in daily_pnls_by_date.values() if v > 0)
+            loss_days = sum(1 for v in daily_pnls_by_date.values() if v < 0)
+
+            stats = {
+                "持仓交易日数": f"{unique_dates}",
+                "持仓标的数": f"{unique_instruments}",
+                "最新持仓市值": f"{total_market_value:,.2f}",
+                "最新未实现盈亏": f"{total_unrealized_pnl:,.2f}",
+                "": "",
+                "最新日盈亏": f"{total_daily_pnl:,.2f}",
+                "单日最大盈亏": f"{max_daily_pnl:,.2f}",
+                "单日最小盈亏": f"{min_daily_pnl:,.2f}",
+                " ": "",
+                "持仓盈利天数": f"{win_days}",
+                "持仓亏损天数": f"{loss_days}",
+                "持仓日胜率": f"{win_days / (win_days + loss_days):.2%}" if (win_days + loss_days) > 0 else "N/A",
+            }
+        else:
+            stats = {
+                "持仓交易日数": "0",
+                "持仓标的数": "0",
+                "最新持仓市值": "0.00",
+                "最新未实现盈亏": "0.00",
+            }
+
+        row = 0
+        for name, value in stats.items():
+            name_label, value_label = QLabel(name), QLabel(value)
+            name_label.setFont(QFont("Microsoft YaHei", 10))
+            name_label.setStyleSheet("color: #666;")
+            value_label.setFont(QFont("Arial", 10, QFont.Bold))
+            value_label.setAlignment(Qt.AlignRight)
+            stats_layout.addWidget(name_label, row, 0)
+            stats_layout.addWidget(value_label, row, 1)
+            row += 1
+
+        layout.addLayout(stats_layout)
+        layout.addStretch()
+        panel.setMinimumWidth(320)
+        panel.setMinimumHeight(700)
+        return panel
+
+    def _setup_daily_position_table(self):
+        headers = [
+            "日期",
+            "标的",
+            "数量",
+            "开仓均价",
+            "收盘价",
+            "市值",
+            "当日盈亏",
+            "总盈亏",
+            "仓位占比",
+            "盈亏占比",
+        ]
+        self.daily_position_table.setColumnCount(len(headers))
+        self.daily_position_table.setHorizontalHeaderLabels(headers)
+        self.daily_position_table.setSortingEnabled(True)
+        self.daily_position_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.daily_position_table.verticalHeader().setVisible(False)
+
+        header = self.daily_position_table.horizontalHeader()
+        header.setSectionsMovable(False)
+        for col in range(len(headers)):
+            header.setSectionResizeMode(col, QHeaderView.Interactive)
+
+        header.sectionResized.connect(self._on_dp_column_resized)
+        header.sectionClicked.connect(self._on_dp_header_clicked)
+
+        self.daily_position_table.model().dataChanged.connect(self._on_dp_data_changed)
+
+        self._dp_user_adjusted_columns = set()
+        self._dp_column_widths = {}
+        self._dp_column_filters = {}
+        self._dp_filter_buttons = {}
+        self._dp_instrument_hidden = False
+        self._dp_original_instruments = []
+        self._dp_saved_sort_column = -1
+        self._dp_saved_sort_order = Qt.AscendingOrder
+
+        self._setup_dp_filter_buttons()
+
+    def _populate_daily_position_table(self, daily_positions: list):
+        self.daily_position_table.setSortingEnabled(False)
+        self.daily_position_table.setRowCount(len(daily_positions))
+        self._dp_instrument_hidden = False
+        self._dp_original_instruments.clear()
+        if hasattr(self, 'dp_instrument_toggle_button'):
+            self.dp_instrument_toggle_button.setText("隐藏标的")
+
+        for row, pos in enumerate(daily_positions):
+            quantity = pos["quantity"]
+            is_long = quantity > 0
+
+            items_to_add = [
+                pos["date"],
+                pos["instrument"],
+                str(quantity),
+                f"{pos['avg_price']:.3f}",
+                f"{pos['close_price']:.3f}",
+                f"{pos['market_value']:,.2f}",
+                f"{pos['daily_pnl']:,.2f}",
+                f"{pos['total_pnl']:,.2f}",
+                f"{pos['position_ratio']:.2%}",
+                f"{pos['pnl_ratio']:.2%}",
+            ]
+
+            for col, item_text in enumerate(items_to_add):
+                item = QTableWidgetItem(item_text)
+                item.setTextAlignment(Qt.AlignCenter)
+
+                if col == 2:
+                    item.setForeground(QColor("#d14545") if is_long else QColor("#3f993f"))
+                elif col in (6, 7):
+                    val = pos["daily_pnl"] if col == 6 else pos["total_pnl"]
+                    if val > 0:
+                        item.setForeground(QColor("#d14545"))
+                    elif val < 0:
+                        item.setForeground(QColor("#3f993f"))
+
+                self.daily_position_table.setItem(row, col, item)
+
+        self.daily_position_table.setSortingEnabled(True)
+
+        header = self.daily_position_table.horizontalHeader()
+        font_metrics = self.daily_position_table.fontMetrics()
+        for col in range(self.daily_position_table.columnCount()):
+            max_width = 0
+            header_text = self.daily_position_table.horizontalHeaderItem(col).text()
+            header_width = font_metrics.width(header_text) + 40
+            max_width = max(max_width, header_width)
+            for row in range(min(self.daily_position_table.rowCount(), 100)):
+                item = self.daily_position_table.item(row, col)
+                if item:
+                    text_width = font_metrics.width(item.text()) + 30
+                    max_width = max(max_width, text_width)
+            max_width = min(max_width, 300)
+            max_width = max(max_width, 80)
+            header.resizeSection(col, max_width + 20)
+
+        self._auto_adjust_all_dp_columns()
+        self._update_dp_filter_button_positions()
+        self._apply_dp_filters()
+
+    def _on_dp_column_resized(self, logical_index, old_size, new_size):
+        self._dp_user_adjusted_columns.add(logical_index)
+        self._dp_column_widths[logical_index] = new_size
+
+    def _on_dp_data_changed(self, top_left, bottom_right, roles):
+        for col in range(top_left.column(), bottom_right.column() + 1):
+            if col not in self._dp_user_adjusted_columns:
+                self._adjust_dp_column_width(col)
+
+    def _adjust_dp_column_width(self, col):
+        header = self.daily_position_table.horizontalHeader()
+        max_width = 0
+        font_metrics = self.daily_position_table.fontMetrics()
+
+        header_text = self.daily_position_table.horizontalHeaderItem(col).text()
+        header_width = font_metrics.width(header_text) + 40
+        max_width = max(max_width, header_width)
+
+        for row in range(self.daily_position_table.rowCount()):
+            item = self.daily_position_table.item(row, col)
+            if item:
+                text = item.text()
+                text_width = font_metrics.width(text) + 30
+                max_width = max(max_width, text_width)
+
+        max_width = min(max_width, 300)
+        max_width = max(max_width, 80)
+
+        visual_margin = 20
+        final_width = max_width + visual_margin
+
+        if col not in self._dp_user_adjusted_columns:
+            header.resizeSection(col, final_width)
+            self._dp_column_widths[col] = final_width
+
+    def _auto_adjust_all_dp_columns(self):
+        for col in range(self.daily_position_table.columnCount()):
+            if col not in self._dp_user_adjusted_columns:
+                self._adjust_dp_column_width(col)
+
+    def _on_dp_header_clicked(self, logical_index):
+        if self._dp_instrument_hidden:
+            QMessageBox.warning(
+                self,
+                "提示",
+                "无法在隐藏状态下进行排序操作"
+            )
+
+    def _setup_dp_filter_buttons(self):
+        header = self.daily_position_table.horizontalHeader()
+        for col in range(self.daily_position_table.columnCount()):
+            btn = FilterButton(header)
+            btn.clicked.connect(lambda checked, c=col: self._show_dp_filter_menu(c))
+            self._dp_filter_buttons[col] = btn
+        self._update_dp_filter_button_positions()
+
+    def _update_dp_filter_button_positions(self):
+        header = self.daily_position_table.horizontalHeader()
+        for col, btn in self._dp_filter_buttons.items():
+            x = header.sectionPosition(col) + header.sectionSize(col) - 18
+            y = (header.height() - 16) // 2
+            btn.move(x, y)
+            btn.setVisible(header.sectionSize(col) > 40)
+
+    def _show_dp_filter_menu(self, col):
+        values = set()
+        for row in range(self.daily_position_table.rowCount()):
+            item = self.daily_position_table.item(row, col)
+            if item:
+                values.add(item.text())
+
+        sorted_values = sorted(values, key=lambda x: (x == "--", x))
+
+        def on_confirm(selected, all_checked):
+            if all_checked:
+                self._dp_column_filters.pop(col, None)
+            else:
+                self._dp_column_filters[col] = selected
+            self._apply_dp_filters()
+            self._update_dp_filter_button_style(col)
+
+        popup = FilterPopup(
+            sorted_values, self._dp_column_filters.get(col), on_confirm, self
+        )
+        pos = self._dp_filter_buttons[col].mapToGlobal(
+            self._dp_filter_buttons[col].rect().bottomLeft()
+        )
+        popup.move(pos)
+        popup.show()
+
+    def _toggle_all_dp_filter(self, actions):
+        all_checked = all(action.isChecked() for action in actions)
+        for action in actions:
+            action.setChecked(not all_checked)
+
+    def _filter_dp_menu_search(self, actions, text):
+        lower = text.lower()
+        for action in actions:
+            action.setVisible(lower in action.text().lower())
+
+    def _update_dp_filter_button_style(self, col):
+        btn = self._dp_filter_buttons.get(col)
+        if not btn:
+            return
+        btn.set_active(col in self._dp_column_filters)
+
+    def _apply_dp_filters(self):
+        self.daily_position_table.setSortingEnabled(False)
+        for row in range(self.daily_position_table.rowCount()):
+            show = True
+            for col, allowed in self._dp_column_filters.items():
+                item = self.daily_position_table.item(row, col)
+                if item and item.text() not in allowed:
+                    show = False
+                    break
+            self.daily_position_table.setRowHidden(row, not show)
+        self.daily_position_table.setSortingEnabled(True)
+
+    def _toggle_dp_instrument_visibility(self):
+        self._dp_instrument_hidden = not self._dp_instrument_hidden
+
+        if self._dp_instrument_hidden:
+            header = self.daily_position_table.horizontalHeader()
+            self._dp_saved_sort_column = header.sortIndicatorSection()
+            self._dp_saved_sort_order = header.sortIndicatorOrder()
+
+            self.daily_position_table.setSortingEnabled(False)
+
+            self._dp_original_instruments.clear()
+
+            for row in range(self.daily_position_table.rowCount()):
+                item = self.daily_position_table.item(row, 1)
+                if item:
+                    self._dp_original_instruments.append((row, item.text()))
+                    item.setText('*' * len(item.text()))
+
+            self.dp_instrument_toggle_button.setText("显示标的")
+        else:
+            for saved_row, original_text in self._dp_original_instruments:
+                item = self.daily_position_table.item(saved_row, 1)
+                if item:
+                    item.setText(original_text)
+
+            self._dp_original_instruments.clear()
+
+            self.daily_position_table.setSortingEnabled(True)
+            if self._dp_saved_sort_column >= 0:
+                self.daily_position_table.sortByColumn(self._dp_saved_sort_column, self._dp_saved_sort_order)
+
+            self.dp_instrument_toggle_button.setText("隐藏标的")
+
+    def _calc_turnover_rates(self):
+        df = self.plot_df
+        trade_log = self.result.trade_log
+        if df is None or df.empty or not trade_log:
+            return None
+
+        multipliers = {
+            iid: data.volume_multiple
+            for iid, data in self.result.instruments_data.items()
+        }
+
+        trade_amounts_by_date = defaultdict(float)
+        for trade in trade_log:
+            if trade.trade_price <= 0 or trade.order_id == -1 or not trade.trade_time:
+                continue
+            if hasattr(trade.trade_time, "strftime"):
+                date_str = trade.trade_time.strftime("%Y-%m-%d")
+            else:
+                date_str = str(trade.trade_time)[:10]
+            multiplier = multipliers.get(trade.instrument_id, 1)
+            trade_amount = trade.trade_price * abs(trade.volume) * multiplier
+            trade_amounts_by_date[date_str] += trade_amount
+
+        dates = df["datetime"].dt.strftime("%Y-%m-%d").tolist()
+        portfolio_values = df["PortfolioValue"].tolist()
+
+        daily_turnover = []
+        for i, date_str in enumerate(dates):
+            amount = trade_amounts_by_date.get(date_str, 0.0)
+            pv = portfolio_values[i]
+            rate = amount / 2 / pv if pv > 0 else 0.0
+            daily_turnover.append({
+                "date": date_str,
+                "portfolio_value": pv,
+                "trade_amount": amount,
+                "turnover_rate": rate,
+            })
+
+        if not daily_turnover:
+            return None
+
+        daily_df = pd.DataFrame(daily_turnover)
+        daily_df["datetime"] = pd.to_datetime(daily_df["date"])
+
+        weekly_turnover = []
+        daily_df["week"] = daily_df["datetime"].dt.isocalendar().week.astype(int)
+        daily_df["year_week"] = (
+            daily_df["datetime"].dt.year.astype(str)
+            + "-W"
+            + daily_df["week"].astype(str).str.zfill(2)
+        )
+        for yw, group in daily_df.groupby("year_week"):
+            total_amount = group["trade_amount"].sum()
+            avg_pv = group["portfolio_value"].mean()
+            rate = total_amount / 2 / avg_pv if avg_pv > 0 else 0.0
+            weekly_turnover.append({
+                "period": yw,
+                "trade_amount": total_amount,
+                "avg_portfolio_value": avg_pv,
+                "turnover_rate": rate,
+                "start_date": group["date"].iloc[0],
+                "end_date": group["date"].iloc[-1],
+            })
+
+        monthly_turnover = []
+        daily_df["year_month"] = daily_df["datetime"].dt.to_period("M").astype(str)
+        for ym, group in daily_df.groupby("year_month"):
+            total_amount = group["trade_amount"].sum()
+            avg_pv = group["portfolio_value"].mean()
+            rate = total_amount / 2 / avg_pv if avg_pv > 0 else 0.0
+            monthly_turnover.append({
+                "period": ym,
+                "trade_amount": total_amount,
+                "avg_portfolio_value": avg_pv,
+                "turnover_rate": rate,
+                "start_date": group["date"].iloc[0],
+                "end_date": group["date"].iloc[-1],
+            })
+
+        return {
+            "daily": daily_turnover,
+            "weekly": weekly_turnover,
+            "monthly": monthly_turnover,
+        }
+
+    def _create_turnover_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QHBoxLayout(tab)
+
+        turnover_data = self._calc_turnover_rates()
+        if turnover_data is None:
+            layout.addWidget(
+                QLabel(
+                    "无交易数据，无法计算换手率",
+                    alignment=Qt.AlignCenter,
+                    styleSheet="QLabel { font-size: 28px; font-weight: bold; }",
+                )
+            )
+            return tab
+
+        stats_panel = self._create_turnover_stats_panel(turnover_data)
+        layout.addWidget(stats_panel)
+
+        chart_panel = self._create_turnover_chart_panel(turnover_data)
+        layout.addWidget(chart_panel)
+
+        layout.setStretchFactor(stats_panel, 1)
+        layout.setStretchFactor(chart_panel, 3)
+        return tab
+
+    def _create_turnover_stats_panel(self, turnover_data: dict) -> QWidget:
+        panel = QFrame()
+        panel.setFrameShape(QFrame.StyledPanel)
+        panel.setStyleSheet(
+            "QFrame { background-color: #f7f7f7; border: 1px solid #e0e0e0; border-radius: 8px; padding: 15px; }"
+            "QLabel { background-color: transparent; border: none; padding: 3px; }"
+        )
+        layout = QVBoxLayout(panel)
+        layout.setSpacing(12)
+
+        title_label = QLabel("换手率统计")
+        title_label.setFont(QFont("Microsoft YaHei", 13, QFont.Bold))
+        title_label.setStyleSheet("color: #333; padding-bottom: 5px;")
+        layout.addWidget(title_label)
+
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setFrameShadow(QFrame.Sunken)
+        line.setStyleSheet("background-color: #e0e0e0; margin: 8px 0;")
+        layout.addWidget(line)
+
+        daily = turnover_data["daily"]
+        weekly = turnover_data["weekly"]
+        monthly = turnover_data["monthly"]
+
+        daily_rates = [d["turnover_rate"] for d in daily]
+        weekly_rates = [w["turnover_rate"] for w in weekly]
+        monthly_rates = [m["turnover_rate"] for m in monthly]
+
+        daily_amounts = [d["trade_amount"] for d in daily]
+        weekly_amounts = [w["trade_amount"] for w in weekly]
+        monthly_amounts = [m["trade_amount"] for m in monthly]
+
+        trading_days_with_trades = sum(1 for r in daily_rates if r > 0)
+        total_days = len(daily_rates)
+
+        stats = {}
+
+        section_title = QLabel("日换手率")
+        section_title.setFont(QFont("Microsoft YaHei", 11, QFont.Bold))
+        section_title.setStyleSheet("color: #d14545; padding-top: 5px;")
+        layout.addWidget(section_title)
+
+        daily_stats = {
+            "日均换手率": f"{np.mean(daily_rates):.4f}" if daily_rates else "N/A",
+            "日最大换手率": f"{np.max(daily_rates):.4f}" if daily_rates else "N/A",
+            "日最小换手率": f"{np.min(daily_rates):.4f}" if daily_rates else "N/A",
+            "日换手率中位数": f"{np.median(daily_rates):.4f}" if daily_rates else "N/A",
+            "日均成交额": f"{np.mean(daily_amounts):,.2f}" if daily_amounts else "N/A",
+            "有交易天数": f"{trading_days_with_trades}/{total_days}",
+        }
+        stats_layout = QGridLayout()
+        stats_layout.setVerticalSpacing(8)
+        stats_layout.setHorizontalSpacing(15)
+        stats_layout.setColumnMinimumWidth(0, 150)
+        row = 0
+        for name, value in daily_stats.items():
+            name_label = QLabel(name)
+            name_label.setFont(QFont("Microsoft YaHei", 10))
+            name_label.setStyleSheet("color: #666;")
+            value_label = QLabel(str(value))
+            value_label.setFont(QFont("Arial", 10, QFont.Bold))
+            value_label.setAlignment(Qt.AlignRight)
+            stats_layout.addWidget(name_label, row, 0)
+            stats_layout.addWidget(value_label, row, 1)
+            row += 1
+        layout.addLayout(stats_layout)
+
+        spacer = QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Fixed)
+        layout.addItem(spacer)
+
+        section_title2 = QLabel("周换手率")
+        section_title2.setFont(QFont("Microsoft YaHei", 11, QFont.Bold))
+        section_title2.setStyleSheet("color: #007bff; padding-top: 5px;")
+        layout.addWidget(section_title2)
+
+        weekly_stats = {
+            "周均换手率": f"{np.mean(weekly_rates):.4f}" if weekly_rates else "N/A",
+            "周最大换手率": f"{np.max(weekly_rates):.4f}" if weekly_rates else "N/A",
+            "周最小换手率": f"{np.min(weekly_rates):.4f}" if weekly_rates else "N/A",
+            "周换手率中位数": f"{np.median(weekly_rates):.4f}" if weekly_rates else "N/A",
+            "周均成交额": f"{np.mean(weekly_amounts):,.2f}" if weekly_amounts else "N/A",
+        }
+        stats_layout2 = QGridLayout()
+        stats_layout2.setVerticalSpacing(8)
+        stats_layout2.setHorizontalSpacing(15)
+        stats_layout2.setColumnMinimumWidth(0, 150)
+        row = 0
+        for name, value in weekly_stats.items():
+            name_label = QLabel(name)
+            name_label.setFont(QFont("Microsoft YaHei", 10))
+            name_label.setStyleSheet("color: #666;")
+            value_label = QLabel(str(value))
+            value_label.setFont(QFont("Arial", 10, QFont.Bold))
+            value_label.setAlignment(Qt.AlignRight)
+            stats_layout2.addWidget(name_label, row, 0)
+            stats_layout2.addWidget(value_label, row, 1)
+            row += 1
+        layout.addLayout(stats_layout2)
+
+        spacer2 = QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Fixed)
+        layout.addItem(spacer2)
+
+        section_title3 = QLabel("月换手率")
+        section_title3.setFont(QFont("Microsoft YaHei", 11, QFont.Bold))
+        section_title3.setStyleSheet("color: #3f993f; padding-top: 5px;")
+        layout.addWidget(section_title3)
+
+        monthly_stats = {
+            "月均换手率": f"{np.mean(monthly_rates):.4f}" if monthly_rates else "N/A",
+            "月最大换手率": f"{np.max(monthly_rates):.4f}" if monthly_rates else "N/A",
+            "月最小换手率": f"{np.min(monthly_rates):.4f}" if monthly_rates else "N/A",
+            "月换手率中位数": f"{np.median(monthly_rates):.4f}" if monthly_rates else "N/A",
+            "月均成交额": f"{np.mean(monthly_amounts):,.2f}" if monthly_amounts else "N/A",
+        }
+        stats_layout3 = QGridLayout()
+        stats_layout3.setVerticalSpacing(8)
+        stats_layout3.setHorizontalSpacing(15)
+        stats_layout3.setColumnMinimumWidth(0, 150)
+        row = 0
+        for name, value in monthly_stats.items():
+            name_label = QLabel(name)
+            name_label.setFont(QFont("Microsoft YaHei", 10))
+            name_label.setStyleSheet("color: #666;")
+            value_label = QLabel(str(value))
+            value_label.setFont(QFont("Arial", 10, QFont.Bold))
+            value_label.setAlignment(Qt.AlignRight)
+            stats_layout3.addWidget(name_label, row, 0)
+            stats_layout3.addWidget(value_label, row, 1)
+            row += 1
+        layout.addLayout(stats_layout3)
+
+        layout.addStretch()
+        panel.setMinimumWidth(320)
+        panel.setMinimumHeight(700)
+        return panel
+
+    def _create_turnover_chart_panel(self, turnover_data: dict) -> QWidget:
+        panel = QWidget()
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(10, 20, 10, 10)
+
+        daily = turnover_data["daily"]
+        weekly = turnover_data["weekly"]
+        monthly = turnover_data["monthly"]
+
+        daily_dates = [d["date"] for d in daily]
+        daily_rates = [d["turnover_rate"] * 100 for d in daily]
+        daily_amounts = [d["trade_amount"] for d in daily]
+
+        axis = DateAxis(x_values=daily_dates, orientation="bottom")
+        if 0 < len(daily_dates) <= 3:
+            axis.setTicks([[(i, date) for i, date in enumerate(daily_dates)]])
+
+        plot_widget = pg.PlotWidget(axisItems={"bottom": axis})
+        plot_widget.setTitle("日换手率", color="k", size="16pt", bold=True)
+        plot_widget.setBackground("#f7f7f7")
+        plot_widget.showGrid(x=True, y=True, alpha=0.3)
+        plot_widget.getPlotItem().layout.setContentsMargins(10, 25, 10, 10)
+        plot_widget.setLabel("left", "换手率 (%)", **{"color": "k", "font-size": "12pt"})
+
+        view_box = plot_widget.getViewBox()
+        view_box.setMouseEnabled(x=True, y=False)
+
+        x = list(range(len(daily_dates)))
+
+        bar_item = pg.BarGraphItem(
+            x=x,
+            height=daily_rates,
+            width=0.6,
+            brushes=["#d14545" if val >= 0 else "#3f993f" for val in daily_rates],
+        )
+        plot_widget.addItem(bar_item)
+
+        margin = 2
+        initial_x_min = -margin
+        initial_x_max = len(x) - 1 + margin if x else margin
+        plot_widget.setXRange(initial_x_min, initial_x_max, padding=0)
+
+        vLine, hLine, info_label = self._create_crosshair_items(plot_widget)
+
+        def mouse_moved_turnover(event):
+            pos = event
+            vb = plot_widget.getViewBox()
+            if vb.sceneBoundingRect().contains(pos):
+                index = int(round(vb.mapSceneToView(pos).x()))
+                if 0 <= index < len(daily_dates):
+                    vLine.show()
+                    hLine.show()
+                    vLine.setPos(index)
+                    hLine.setPos(daily_rates[index])
+                    info_label.setPlainText(
+                        f"日期: {daily_dates[index]}\n"
+                        f"换手率: {daily_rates[index]:.4f}%\n"
+                        f"成交额: {daily_amounts[index]:,.2f}"
+                    )
+                    info_label.adjustSize()
+                    self._update_tooltip_position(info_label, pos, vb)
+                    info_label.show()
+                else:
+                    info_label.hide()
+                    vLine.hide()
+                    hLine.hide()
+            else:
+                info_label.hide()
+                vLine.hide()
+                hLine.hide()
+
+        plot_widget.scene().sigMouseMoved.connect(mouse_moved_turnover)
+        panel_layout.addWidget(plot_widget, stretch=1)
+
+        weekly_dates = [w["start_date"] for w in weekly]
+        weekly_rates = [w["turnover_rate"] * 100 for w in weekly]
+        weekly_amounts = [w["trade_amount"] for w in weekly]
+
+        if weekly_dates:
+            w_axis = DateAxis(x_values=weekly_dates, orientation="bottom")
+            if 0 < len(weekly_dates) <= 3:
+                w_axis.setTicks([[(i, date) for i, date in enumerate(weekly_dates)]])
+
+            w_plot = pg.PlotWidget(axisItems={"bottom": w_axis})
+            w_plot.setTitle("周换手率", color="k", size="16pt", bold=True)
+            w_plot.setBackground("#f7f7f7")
+            w_plot.showGrid(x=True, y=True, alpha=0.3)
+            w_plot.getPlotItem().layout.setContentsMargins(10, 25, 10, 10)
+            w_plot.setLabel("left", "换手率 (%)", **{"color": "k", "font-size": "12pt"})
+
+            w_vb = w_plot.getViewBox()
+            w_vb.setMouseEnabled(x=True, y=False)
+
+            w_x = list(range(len(weekly_dates)))
+            w_bar = pg.BarGraphItem(
+                x=w_x,
+                height=weekly_rates,
+                width=0.6,
+                brushes=["#007bff"] * len(weekly_rates),
+            )
+            w_plot.addItem(w_bar)
+
+            w_margin = 2
+            w_plot.setXRange(-w_margin, len(w_x) - 1 + w_margin if w_x else w_margin, padding=0)
+
+            w_vLine, w_hLine, w_info = self._create_crosshair_items(w_plot)
+
+            def mouse_moved_weekly(event):
+                pos = event
+                vb = w_plot.getViewBox()
+                if vb.sceneBoundingRect().contains(pos):
+                    index = int(round(vb.mapSceneToView(pos).x()))
+                    if 0 <= index < len(weekly_dates):
+                        w_vLine.show()
+                        w_hLine.show()
+                        w_vLine.setPos(index)
+                        w_hLine.setPos(weekly_rates[index])
+                        w_info.setPlainText(
+                            f"周起始: {weekly_dates[index]}\n"
+                            f"周换手率: {weekly_rates[index]:.4f}%\n"
+                            f"周成交额: {weekly_amounts[index]:,.2f}"
+                        )
+                        w_info.adjustSize()
+                        self._update_tooltip_position(w_info, pos, vb)
+                        w_info.show()
+                    else:
+                        w_info.hide()
+                        w_vLine.hide()
+                        w_hLine.hide()
+                else:
+                    w_info.hide()
+                    w_vLine.hide()
+                    w_hLine.hide()
+
+            w_plot.scene().sigMouseMoved.connect(mouse_moved_weekly)
+            panel_layout.addWidget(w_plot, stretch=1)
+
+        monthly_dates = [m["start_date"] for m in monthly]
+        monthly_rates_pct = [m["turnover_rate"] * 100 for m in monthly]
+        monthly_amounts = [m["trade_amount"] for m in monthly]
+
+        if monthly_dates:
+            m_axis = DateAxis(x_values=monthly_dates, orientation="bottom")
+            if 0 < len(monthly_dates) <= 3:
+                m_axis.setTicks([[(i, date) for i, date in enumerate(monthly_dates)]])
+
+            m_plot = pg.PlotWidget(axisItems={"bottom": m_axis})
+            m_plot.setTitle("月换手率", color="k", size="16pt", bold=True)
+            m_plot.setBackground("#f7f7f7")
+            m_plot.showGrid(x=True, y=True, alpha=0.3)
+            m_plot.getPlotItem().layout.setContentsMargins(10, 25, 10, 10)
+            m_plot.setLabel("left", "换手率 (%)", **{"color": "k", "font-size": "12pt"})
+
+            m_vb = m_plot.getViewBox()
+            m_vb.setMouseEnabled(x=True, y=False)
+
+            m_x = list(range(len(monthly_dates)))
+            m_bar = pg.BarGraphItem(
+                x=m_x,
+                height=monthly_rates_pct,
+                width=0.6,
+                brushes=["#3f993f"] * len(monthly_rates_pct),
+            )
+            m_plot.addItem(m_bar)
+
+            m_margin = 2
+            m_plot.setXRange(-m_margin, len(m_x) - 1 + m_margin if m_x else m_margin, padding=0)
+
+            m_vLine, m_hLine, m_info = self._create_crosshair_items(m_plot)
+
+            def mouse_moved_monthly(event):
+                pos = event
+                vb = m_plot.getViewBox()
+                if vb.sceneBoundingRect().contains(pos):
+                    index = int(round(vb.mapSceneToView(pos).x()))
+                    if 0 <= index < len(monthly_dates):
+                        m_vLine.show()
+                        m_hLine.show()
+                        m_vLine.setPos(index)
+                        m_hLine.setPos(monthly_rates_pct[index])
+                        m_info.setPlainText(
+                            f"月起始: {monthly_dates[index]}\n"
+                            f"月换手率: {monthly_rates_pct[index]:.4f}%\n"
+                            f"月成交额: {monthly_amounts[index]:,.2f}"
+                        )
+                        m_info.adjustSize()
+                        self._update_tooltip_position(m_info, pos, vb)
+                        m_info.show()
+                    else:
+                        m_info.hide()
+                        m_vLine.hide()
+                        m_hLine.hide()
+                else:
+                    m_info.hide()
+                    m_vLine.hide()
+                    m_hLine.hide()
+
+            m_plot.scene().sigMouseMoved.connect(mouse_moved_monthly)
+            panel_layout.addWidget(m_plot, stretch=1)
+
+        return panel
+
+
+def generate_report(result: "BacktestingResult"):
+    if is_ai_mode():
+        return
+    app = QApplication.instance() or QApplication(sys.argv)
+    window = BacktestReportWindow(result)
+    window.show()
+    app.exec_()
