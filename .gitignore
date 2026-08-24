@@ -3,6 +3,8 @@
 !.trae/skills/strategy-generator
 !.trae/skills/strategy-optimizer
 
+.venv/
+
 .deveco
 
 __pycache__/
