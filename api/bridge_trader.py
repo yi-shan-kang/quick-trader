@@ -90,8 +90,10 @@ def _make_order_obj(order_dict):
     以兼容现有的方向判断逻辑。
     """
     obj = SimpleNamespace()
+    # 始终使用 m_strOrderRef 作为 order_id，与 buy()/sell() 返回值保持一致，
+    # 避免 bridge 回调携带 m_strOrderSysID 时路由失败导致簿记不更新
     obj.order_id = str(order_dict.get(
-        'm_strOrderSysID', order_dict.get('m_strOrderRef', '')
+        'm_strOrderRef', order_dict.get('m_strOrderSysID', '')
     ))
     raw_code = order_dict.get('m_strInstrumentID', '')
     obj.stock_code = _normalize_stock_code(raw_code)
@@ -124,8 +126,9 @@ def _make_trade_obj(deal_dict):
     """
     obj = SimpleNamespace()
     obj.trade_id = str(deal_dict.get('m_strTradeID', ''))
+    # 始终使用 m_strOrderRef 作为 order_id，与 buy()/sell() 返回值保持一致
     obj.order_id = str(deal_dict.get(
-        'm_strOrderSysID', deal_dict.get('m_strOrderRef', '')
+        'm_strOrderRef', deal_dict.get('m_strOrderSysID', '')
     ))
     raw_code = deal_dict.get('m_strInstrumentID', '')
     obj.stock_code = _normalize_stock_code(raw_code)

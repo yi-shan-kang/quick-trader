@@ -199,11 +199,11 @@ def run_backtest(strategy_name='double_ma', period='1d', pool=None,
 
 
 def run_sim_trade(strategy_name='double_ma', path=r'D:\qmt\userdata_mini', account_id=None):
-    """运行模拟交易"""
+    """运行模拟交易（持续运行，Ctrl+C 退出）"""
     log_file = Logger.setup_global_file_handler(strategy_name)
     logger = Logger.get_default_logger(strategy_name)
     logger.info(f"日志文件: {log_file}")
-    logger.info("开始模拟交易")
+    logger.info("开始模拟交易（持续运行，Ctrl+C 退出）")
 
     strategy_class, default_kwargs, _ = _resolve_strategy(strategy_name)
 
@@ -212,18 +212,16 @@ def run_sim_trade(strategy_name='double_ma', path=r'D:\qmt\userdata_mini', accou
     api.add_strategy(strategy_class, instance_id=strategy_name, virtual_book=book, **default_kwargs)
     _init_virtual_book_from_account(api, book)
 
-    api.run()
-    api.close()
-
-    logger.info("模拟交易完成")
+    # 持续运行：行情驱动策略 on_bar，收盘后自动停止
+    _run_until_market_close(api, logger, "模拟交易")
 
 
 def run_real_trade(strategy_name='double_ma', path=r'D:\qmt\userdata_mini', account_id=None):
-    """运行实盘交易"""
+    """运行实盘交易（持续运行，Ctrl+C 退出）"""
     log_file = Logger.setup_global_file_handler(strategy_name)
     logger = Logger.get_default_logger(strategy_name)
     logger.info(f"日志文件: {log_file}")
-    logger.info("开始实盘交易")
+    logger.info("开始实盘交易（持续运行，Ctrl+C 退出）")
 
     strategy_class, default_kwargs, _ = _resolve_strategy(strategy_name)
 
@@ -232,10 +230,43 @@ def run_real_trade(strategy_name='double_ma', path=r'D:\qmt\userdata_mini', acco
     api.add_strategy(strategy_class, instance_id=strategy_name, virtual_book=book, **default_kwargs)
     _init_virtual_book_from_account(api, book)
 
-    api.run()
-    api.close()
+    # 持续运行：行情驱动策略 on_bar，收盘后自动停止
+    _run_until_market_close(api, logger, "实盘交易")
 
-    logger.info("实盘交易完成")
+
+def _run_until_market_close(api, logger, label: str):
+    """启动行情驱动循环并持续运行至收盘或收到 Ctrl+C
+
+    替代旧版 api.run() + api.close() 的"单次触发即退出"模式：
+    - api.run_loop() 在后台线程持续接收行情并触发策略 on_bar
+    - 主线程阻塞等待，直到 15:05 收盘或收到键盘中断
+    """
+    import time as _time
+    import datetime as _dt
+    import signal
+
+    api.run_loop()
+    logger.info(f"{label}行情循环已启动，等待收盘或 Ctrl+C 退出")
+
+    def _on_sigint(signum, frame):
+        logger.info("收到 Ctrl+C，正在退出…")
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGINT, _on_sigint)
+
+    try:
+        while True:
+            now = _dt.datetime.now()
+            # 15:05 后自动退出
+            if now.hour > 15 or (now.hour == 15 and now.minute >= 5):
+                logger.info("收盘时间到，自动退出")
+                break
+            _time.sleep(5)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        api.close()
+        logger.info(f"{label}已停止")
 
 
 def _resolve_instances_config(config_path: str) -> str:

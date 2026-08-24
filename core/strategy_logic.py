@@ -306,6 +306,18 @@ class StrategyLogic:
         """
         self.log(f'成交回调: {trade}')
 
+    def on_order_error(self, order_error):
+        """委托失败/废单回报时触发
+
+        当订单被拒单或变为废单时，框架会调用此方法通知策略。
+        默认实现仅记录日志，子类可重写以实现自定义的错误处理逻辑
+        （如清理内部状态、重试等）。
+
+        Args:
+            order_error: 委托错误信息对象
+        """
+        self.log(f'委托失败: {order_error}')
+
     def get_state(self) -> dict:
         """导出策略状态用于持久化
 

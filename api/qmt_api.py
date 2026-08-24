@@ -23,7 +23,8 @@ class QMTTrader:
         self.xttrader = xttrader
         self.xtaccount = xtaccount
         self.logger = logging.getLogger(self.__class__.__module__ + '.' + self.__class__.__name__)
-        self.pending_orders = {}  # {order_id: {stock_code, direction, volume, submit_time, retry_count}}
+        self.pending_orders = {}  # {str(order_id): {stock_code, direction, volume, submit_time, retry_count}}
+        self._pending_lock = threading.Lock()  # 保护 pending_orders 跨线程访问（行情线程/交易主推线程）
         self._on_retry_callback = None  # 撤单重下回调，由 QMTAPI 设置
 
     def buy(self, symbol: str, price: float, volume: int, strategy_name: str = '', order_remark: str = ''):
@@ -110,7 +111,12 @@ class QMTTrader:
             return False
 
         try:
-            result = self.xttrader.cancel_order_stock(self.xtaccount, order_id)
+            # xttrader.cancel_order_stock 要求 int 类型订单号
+            try:
+                order_id_raw = int(order_id)
+            except (TypeError, ValueError):
+                order_id_raw = order_id
+            result = self.xttrader.cancel_order_stock(self.xtaccount, order_id_raw)
             self.logger.info(f"撤单成功: {result}")
             return result
         except Exception as e:
@@ -130,28 +136,6 @@ class QMTTrader:
         except Exception as e:
             self.logger.error(f"查询订单失败: {e}")
             return None
-
-    def wait_order_completed(self, order_id: str, timeout: float = 30.0, interval: float = 1.0) -> Optional[str]:
-        """等待订单完成
-
-        Args:
-            order_id: 订单ID
-            timeout: 超时时间（秒）
-            interval: 轮询间隔（秒）
-
-        Returns:
-            订单最终状态，超时返回 None
-        """
-        start_time = time.time()
-        while time.time() - start_time < timeout:
-            order = self.query_order(order_id)
-            if order is not None:
-                status = getattr(order, 'order_status', None)
-                if status in ('filled', 'cancelled', 'rejected'):
-                    return status
-            time.sleep(interval)
-        self.logger.warning(f"等待订单 {order_id} 超时 ({timeout}s)")
-        return None
 
     def get_position(self, symbol: str = None):
         """获取持仓"""
@@ -203,22 +187,26 @@ class QMTTrader:
             order_type_name: 订单类型名称（"买入"/"卖出"）
             strategy_name: 策略名称，用于重试时传递 order_remark
         """
-        self.pending_orders[order_id] = {
-            'stock_code': stock_code,
-            'direction': direction,
-            'volume': volume,
-            'submit_time': time.time(),
-            'order_type_name': order_type_name,
-            'strategy_name': strategy_name,
-            'retry_count': 0,
-        }
+        # 统一使用 str 作为 key，与回调中 str(qmt_order.order_id) 保持一致
+        with self._pending_lock:
+            self.pending_orders[str(order_id)] = {
+                'stock_code': stock_code,
+                'direction': direction,
+                'volume': volume,
+                'submit_time': time.time(),
+                'order_type_name': order_type_name,
+                'strategy_name': strategy_name,
+                'retry_count': 0,
+            }
         self.logger.info(f"添加待处理订单: {order_id}, {stock_code}, {order_type_name}, 数量: {volume}")
 
     def remove_pending_order(self, order_id):
         """从待处理订单列表中移除订单"""
-        if order_id in self.pending_orders:
-            info = self.pending_orders.pop(order_id)
-            self.logger.info(f"移除待处理订单: {order_id}, {info['stock_code']}, {info['order_type_name']}")
+        key = str(order_id)
+        with self._pending_lock:
+            info = self.pending_orders.pop(key, None)
+        if info:
+            self.logger.info(f"移除待处理订单: {key}, {info['stock_code']}, {info['order_type_name']}")
 
     def calculate_price_limit(self, stock_code, prev_close_price=0):
         """获取股票涨跌停价格
@@ -311,7 +299,17 @@ class QMTTrader:
         orders_to_remove = []
         orders_to_retry = []
 
-        for order_id, info in list(self.pending_orders.items()):
+        with self._pending_lock:
+            pending_snapshot = list(self.pending_orders.items())
+        if not pending_snapshot:
+            return
+
+        final_states = {
+            xtconstant.ORDER_SUCCEEDED, xtconstant.ORDER_CANCELED,
+            xtconstant.ORDER_JUNK, xtconstant.ORDER_PART_CANCEL,
+        }
+
+        for order_id, info in pending_snapshot:
             elapsed = time.time() - info['submit_time']
             if elapsed < retry_timeout_seconds:
                 continue
@@ -322,10 +320,6 @@ class QMTTrader:
                 orders_to_remove.append(order_id)
                 continue
 
-            final_states = {
-                xtconstant.ORDER_SUCCEEDED, xtconstant.ORDER_CANCELED,
-                xtconstant.ORDER_JUNK, xtconstant.ORDER_PART_CANCEL,
-            }
             if getattr(order_obj, 'order_status', None) in final_states:
                 self.logger.info(f"待处理订单 {order_id} 已达最终状态，移除跟踪")
                 orders_to_remove.append(order_id)
@@ -345,8 +339,25 @@ class QMTTrader:
 
             cancel_result = self.cancel_order(order_id)
             if cancel_result is not False:
-                self.logger.info(f"超时撤单成功，委托ID: {order_id}")
                 orders_to_remove.append(order_id)
+
+                # 等待撤单确认（原单到达终态），以最终成交量计算剩余，
+                # 避免撤单请求到生效之间的成交被漏算导致重复买入
+                final_traded_volume = getattr(order_obj, 'traded_volume', 0)
+                wait_deadline = time.time() + 3.0
+                confirmed = False
+                while time.time() < wait_deadline:
+                    latest_order = self.query_order(order_id)
+                    if latest_order is not None:
+                        final_traded_volume = getattr(latest_order, 'traded_volume', final_traded_volume)
+                        if getattr(latest_order, 'order_status', None) in final_states:
+                            confirmed = True
+                            break
+                    time.sleep(0.2)
+                if confirmed:
+                    self.logger.info(f"订单 {order_id} 撤单已确认，最终成交量={final_traded_volume}")
+                else:
+                    self.logger.warning(f"等待订单 {order_id} 撤单确认超时，按最新可查成交量={final_traded_volume}计算剩余")
 
                 if direction == xtconstant.STOCK_SELL:
                     self.logger.info(f"{stock_code} 卖出单撤单后不自动重下，等待下一轮策略触发")
@@ -356,7 +367,7 @@ class QMTTrader:
                     self.logger.warning(f"{stock_code} {order_type_name}已达最大重试次数，不再重新下单")
                     continue
 
-                remaining_volume = volume - getattr(order_obj, 'traded_volume', 0)
+                remaining_volume = volume - final_traded_volume
                 if remaining_volume <= 0:
                     continue
 
@@ -381,16 +392,19 @@ class QMTTrader:
             else:
                 self.logger.error(f"超时撤单失败，委托ID: {order_id}")
 
-        for order_id in orders_to_remove:
-            self.pending_orders.pop(order_id, None)
+        with self._pending_lock:
+            for order_id in orders_to_remove:
+                self.pending_orders.pop(str(order_id), None)
+
+            for new_order_id, stock_code, direction, volume, order_type_name, strategy_name, retry_count, retry_price in orders_to_retry:
+                self.pending_orders[str(new_order_id)] = {
+                    'stock_code': stock_code, 'direction': direction,
+                    'volume': volume, 'submit_time': time.time(),
+                    'order_type_name': order_type_name, 'strategy_name': strategy_name,
+                    'retry_count': retry_count,
+                }
 
         for new_order_id, stock_code, direction, volume, order_type_name, strategy_name, retry_count, retry_price in orders_to_retry:
-            self.pending_orders[new_order_id] = {
-                'stock_code': stock_code, 'direction': direction,
-                'volume': volume, 'submit_time': time.time(),
-                'order_type_name': order_type_name, 'strategy_name': strategy_name,
-                'retry_count': retry_count,
-            }
             # 通知上层（QMTAPI）注册新订单到 order_router 和 VirtualBook
             if self._on_retry_callback:
                 try:
@@ -447,6 +461,16 @@ class QMTAPI(BaseAPI):
         self._executors: Dict[str, QMTExecutor] = {}
         self._virtual_books: Dict[str, VirtualBook] = {}
         self._on_trade_filled_callback: Optional[Callable[[str, TradeInfo], None]] = None
+        # 未匹配回报缓冲：下单成功到 register_order 之间存在毫秒级窗口，
+        # 期间到达的委托/成交回报会被当作"外部单"忽略导致簿记漏记。
+        # 暂存后由 _replay_deferred 在订单注册时重放，超过 TTL 视为真外部单丢弃。
+        self._deferred_orders: Dict[str, list] = {}  # order_id -> [(qmt_order, timestamp), ...]
+        self._deferred_trades: Dict[str, list] = {}  # order_id -> [(qmt_trade, timestamp), ...]
+        self._deferred_lock = threading.Lock()
+        self._deferred_ttl = 60.0
+        self._closed = False
+        self._reconnect_lock = threading.Lock()
+        self._reconnecting = False
         self._init_api()
 
     def set_on_trade_filled_callback(self, callback):
@@ -485,7 +509,8 @@ class QMTAPI(BaseAPI):
                     self.api = api_instance
 
                 def on_disconnected(self):
-                    self.api.logger.warning("MiniQMT 交易服务器连接断开")
+                    self.api.logger.warning("MiniQMT 交易服务器连接断开，将在后台自动重连")
+                    self.api._schedule_reconnect()
 
                 def on_stock_order(self, order):
                     self.api.logger.info(f"收到委托主推: {order.stock_code} {order.order_status}")
@@ -584,6 +609,63 @@ class QMTAPI(BaseAPI):
         except Exception as e:
             self.logger.error(f"初始化桥接 API 失败: {e}")
 
+    def _schedule_reconnect(self):
+        """断线后调度后台重连（仅 miniqmt 模式）"""
+        if self.trade_mode != 'miniqmt' or self._closed:
+            return
+        with self._reconnect_lock:
+            if self._reconnecting:
+                return
+            self._reconnecting = True
+        threading.Thread(target=self._reconnect_loop, daemon=True).start()
+
+    def _reconnect_loop(self):
+        """后台重连循环：重建交易会话并恢复账户订阅
+
+        采用指数退避（5s 起步封顶 30s），成功后更新 QMTTrader 持有的
+        xttrader 引用；行情订阅由 xtdata 层自行恢复，无需处理。
+        """
+        max_attempts = 12
+        try:
+            for attempt in range(1, max_attempts + 1):
+                if self._closed:
+                    return
+                wait_seconds = min(5 * attempt, 30)
+                self.logger.info(f'{wait_seconds}s 后尝试重连 MiniQMT (第{attempt}/{max_attempts}次)')
+                time.sleep(wait_seconds)
+                if self._closed:
+                    return
+                try:
+                    from xtquant.xttrader import XtQuantTrader
+                    try:
+                        self.xttrader.stop()
+                    except Exception:
+                        pass
+                    session_id = int(time.time() * 1000) % 1000000
+                    xttrader = XtQuantTrader(self.path, session_id)
+                    xttrader.register_callback(self.callback)
+                    xttrader.start()
+                    connect_result = xttrader.connect()
+                    if connect_result != 0:
+                        self.logger.error(f'重连 MiniQMT 失败, 错误码: {connect_result}')
+                        continue
+                    if self.xtaccount:
+                        subscribe_result = xttrader.subscribe(self.xtaccount)
+                        if subscribe_result != 0:
+                            self.logger.error(f'重连后订阅账户失败, 错误码: {subscribe_result}')
+                            continue
+                    self.xttrader = xttrader
+                    if self.trader:
+                        self.trader.xttrader = xttrader
+                    self.logger.info('MiniQMT 重连成功，交易通道已恢复')
+                    return
+                except Exception as e:
+                    self.logger.error(f'MiniQMT 重连异常: {e}')
+            self.logger.error('MiniQMT 重连次数已用尽，交易通道未恢复，请人工检查 QMT 客户端')
+        finally:
+            with self._reconnect_lock:
+                self._reconnecting = False
+
     def add_strategy(self, strategy_logic_class: type, instance_id: str = None,
                      virtual_book: VirtualBook = None, **kwargs):
         """添加策略 - 实例化StrategyLogic，注入QMT执行器
@@ -595,6 +677,8 @@ class QMTAPI(BaseAPI):
             **kwargs: 策略参数
         """
         executor = QMTExecutor(self.trader, virtual_book=virtual_book)
+        # 订单注册后重放暂存回报的钩子（注册竞态防护）
+        executor._replay_callback = self._replay_deferred
 
         if instance_id:
             executor.set_order_router(self.order_router)
@@ -651,12 +735,14 @@ class QMTAPI(BaseAPI):
                 self.order_router.route_order(order_id, order_info)
                 if not order_info.is_active:
                     self.order_router.cleanup_order(order_id)
-                    if order_info.is_completed or order_info.status == OrderInfo.STATUS_CANCELED:
-                        for book in self._virtual_books.values():
-                            book.on_order_completed(order_id)
+                    # 所有终态（成交/撤单/废单/拒单）都要释放 VirtualBook 待确认占用，
+                    # 否则买入废单后资金被永久冻结
+                    for book in self._virtual_books.values():
+                        book.on_order_completed(order_id)
             elif self._strategies:
-                # 多策略模式：不属于任何实例的订单（外部策略），忽略
-                self.logger.debug(f'忽略外部订单: {order_id} {order_info.symbol}')
+                # 多策略模式：未匹配的委托可能是"下单后注册前"到达的自家单，
+                # 暂存等待 _replay_deferred 重放；超过 TTL 视为外部单丢弃
+                self._defer_order(order_id, qmt_order)
             elif self.strategy:
                 self.strategy.on_order(order_info)
         except Exception as e:
@@ -681,7 +767,13 @@ class QMTAPI(BaseAPI):
                 or 0
             )
             amount = price * volume
-            commission = raw_commission if raw_commission > 0 else amount * 0.0001
+            if raw_commission > 0:
+                commission = raw_commission
+            else:
+                # 兜底估算：佣金万2.5（最低5元），卖出另收0.05%印花税
+                commission = max(amount * 0.00025, 5.0)
+                if direction == 'sell':
+                    commission += amount * 0.0005
             trade_info = TradeInfo(
                 trade_id=str(getattr(qmt_trade, 'traded_id', '')),
                 order_id=str(getattr(qmt_trade, 'order_id', '')),
@@ -715,8 +807,9 @@ class QMTAPI(BaseAPI):
                         except Exception as cb_e:
                             self.logger.error(f'成交保存回调异常: {cb_e}')
             elif self._strategies:
-                # 多策略模式：不属于任何实例的成交（外部策略），忽略
-                self.logger.debug(f'忽略外部成交: {order_id} {trade_info.symbol}')
+                # 多策略模式：未匹配的成交可能是"下单后注册前"到达的自家单，
+                # 暂存等待 _replay_deferred 重放；超过 TTL 视为外部单丢弃
+                self._defer_trade(order_id, qmt_trade)
             elif self.strategy:
                 self.strategy.on_trade(trade_info)
         except Exception as e:
@@ -744,6 +837,8 @@ class QMTAPI(BaseAPI):
         if instance_id and self.order_router:
             self.order_router.register_order(new_order_id, instance_id)
             self.logger.info(f'重下订单注册: {new_order_id} → {instance_id}, {symbol} {"买入" if is_buy else "卖出"}')
+            # 重放注册窗口期内到达的暂存回报
+            self._replay_deferred(new_order_id)
 
         # 更新 VirtualBook 待确认订单
         if instance_id and instance_id in self._virtual_books:
@@ -753,14 +848,62 @@ class QMTAPI(BaseAPI):
             else:
                 book.on_sell_submitted(symbol, price, volume, new_order_id)
 
+    def _defer_order(self, order_id: str, qmt_order):
+        """暂存未匹配的委托回报，等待订单注册后重放"""
+        with self._deferred_lock:
+            self._deferred_orders.setdefault(order_id, []).append((qmt_order, time.time()))
+            self._cleanup_deferred_locked()
+        self.logger.debug(f'委托回报暂存待匹配: {order_id}')
+
+    def _defer_trade(self, order_id: str, qmt_trade):
+        """暂存未匹配的成交回报，等待订单注册后重放"""
+        with self._deferred_lock:
+            self._deferred_trades.setdefault(order_id, []).append((qmt_trade, time.time()))
+            self._cleanup_deferred_locked()
+        self.logger.debug(f'成交回报暂存待匹配: {order_id}')
+
+    def _cleanup_deferred_locked(self):
+        """清理超过 TTL 的暂存回报（视为真外部单丢弃），调用方需持有锁"""
+        now = time.time()
+        for buf in (self._deferred_orders, self._deferred_trades):
+            expired = [k for k, entries in buf.items() if now - entries[-1][1] > self._deferred_ttl]
+            for k in expired:
+                buf.pop(k)
+
+    def _replay_deferred(self, order_id: str):
+        """订单注册后重放暂存的委托/成交回报"""
+        with self._deferred_lock:
+            order_entries = self._deferred_orders.pop(order_id, [])
+            trade_entries = self._deferred_trades.pop(order_id, [])
+        for qmt_order, _ in order_entries:
+            self.logger.info(f'重放暂存委托回报: {order_id}')
+            self._on_qmt_order(qmt_order)
+        for qmt_trade, _ in trade_entries:
+            self.logger.info(f'重放暂存成交回报: {order_id}')
+            self._on_qmt_trade(qmt_trade)
+
     def _on_qmt_order_error(self, order_error):
-        """处理委托失败回报 - 从待处理订单中移除并通知策略"""
-        order_id = getattr(order_error, 'order_id', None)
-        if order_id and hasattr(self.trader, 'remove_pending_order'):
+        """处理委托失败回报 - 清理订单归属、释放 VirtualBook 占用并通知策略"""
+        order_id = str(getattr(order_error, 'order_id', '') or '')
+        if not order_id:
+            return
+        if self.trader and hasattr(self.trader, 'remove_pending_order'):
             self.trader.remove_pending_order(order_id)
-        if self.strategy and hasattr(self.strategy, 'on_order_error'):
+        instance_id = self.order_router.get_instance_id(order_id) if self.order_router else None
+        if self.order_router:
+            self.order_router.cleanup_order(order_id)
+        # 委托失败=订单终态，释放 VirtualBook 待确认占用的资金/持仓
+        for book in self._virtual_books.values():
+            book.on_order_completed(order_id)
+        # 通知归属策略（多策略模式路由到实例，单策略模式直接推送）
+        target = None
+        if instance_id and instance_id in self._strategies:
+            target = self._strategies[instance_id]
+        elif self.strategy:
+            target = self.strategy
+        if target is not None:
             try:
-                self.strategy.on_order_error(order_error)
+                target.on_order_error(order_error)
             except Exception as e:
                 self.logger.error(f'策略处理委托失败回调异常: {e}')
 
@@ -779,10 +922,12 @@ class QMTAPI(BaseAPI):
 
             active_statuses = {
                 xtconstant.ORDER_UNREPORTED,
+                xtconstant.ORDER_WAIT_REPORTING,
                 xtconstant.ORDER_REPORTED,
                 xtconstant.ORDER_REPORTED_CANCEL,
             }
             completed_statuses = {xtconstant.ORDER_SUCCEEDED}
+            partial_statuses = {xtconstant.ORDER_PART_SUCC}
             canceled_statuses = {
                 xtconstant.ORDER_CANCELED,
                 xtconstant.ORDER_PART_CANCEL,
@@ -794,6 +939,8 @@ class QMTAPI(BaseAPI):
                 return OrderInfo.STATUS_ACCEPTED
             elif status_raw in completed_statuses:
                 return OrderInfo.STATUS_COMPLETED
+            elif status_raw in partial_statuses:
+                return OrderInfo.STATUS_PARTIAL
             elif status_raw in canceled_statuses:
                 return OrderInfo.STATUS_CANCELED
             elif status_raw in rejected_statuses:
@@ -1067,7 +1214,8 @@ class QMTAPI(BaseAPI):
 
             now = datetime.datetime.now()
             hour, minute = now.hour, now.minute
-            if hour < 9 or (hour == 11 and minute >= 30) or hour == 12 or hour >= 15:
+            # 9:30 开盘前（含集合竞价）不触发策略，避免以未稳定的价格下单
+            if hour < 9 or (hour == 9 and minute < 30) or (hour == 11 and minute >= 30) or hour == 12 or hour >= 15:
                 return
             if now.weekday() >= 5:
                 return
@@ -1185,6 +1333,7 @@ class QMTAPI(BaseAPI):
 
     def close(self):
         """关闭API"""
+        self._closed = True
         self.stop_loop()
         if self.xttrader:
             try:

@@ -182,6 +182,7 @@ class QMTExecutor(StrategyExecutor):
         self.virtual_book = virtual_book
         self._data_adapter = data_adapter
         self._order_router: Optional['OrderRouter'] = None
+        self._replay_callback = None  # 订单注册后重放暂存回报的钩子，由 QMTAPI 设置
         self.logger = logging.getLogger(self.__class__.__module__ + '.' + self.__class__.__name__)
 
     def set_order_router(self, order_router: 'OrderRouter'):
@@ -228,6 +229,9 @@ class QMTExecutor(StrategyExecutor):
                 self.virtual_book.on_buy_submitted(symbol, price, volume, order_id)
             if self._order_router and self.virtual_book:
                 self._order_router.register_order(order_id, self.virtual_book.strategy_id)
+                # 注册完成，重放在注册窗口期内到达的委托/成交回报
+                if self._replay_callback:
+                    self._replay_callback(order_id)
         return result
 
     def execute_sell(self, symbol: str, price: float, volume: int) -> Any:
@@ -264,6 +268,9 @@ class QMTExecutor(StrategyExecutor):
                 self.virtual_book.on_sell_submitted(symbol, price, volume, order_id)
             if self._order_router and self.virtual_book:
                 self._order_router.register_order(order_id, self.virtual_book.strategy_id)
+                # 注册完成，重放在注册窗口期内到达的委托/成交回报
+                if self._replay_callback:
+                    self._replay_callback(order_id)
         return result
 
     def cancel_order(self, order_id: str) -> bool:
@@ -283,8 +290,12 @@ class QMTExecutor(StrategyExecutor):
         if self.virtual_book:
             return self.virtual_book.get_cash()
         account = self.qmt_api.get_account()
-        if account and hasattr(account, 'cash'):
-            return account.cash
+        if account:
+            # 兼容新旧版 xtquant（cash / m_dAvailable）
+            for attr in ('cash', 'm_dAvailable'):
+                value = getattr(account, attr, None)
+                if value is not None:
+                    return value
         return 0.0
 
     def get_position_size(self, symbol: str) -> int:
@@ -292,6 +303,10 @@ class QMTExecutor(StrategyExecutor):
         if self.virtual_book:
             return self.virtual_book.get_position_size(symbol)
         position = self.qmt_api.get_position(symbol)
-        if position and hasattr(position, 'volume'):
-            return position.volume
+        if position:
+            # 兼容新旧版 xtquant（volume / m_nVolume）
+            for attr in ('volume', 'm_nVolume'):
+                value = getattr(position, attr, None)
+                if value is not None:
+                    return value
         return 0

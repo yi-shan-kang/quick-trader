@@ -128,7 +128,13 @@ class StrategyInstanceManager:
                     persisted_states[instance_id] = persisted_state
                     state_loaded = True
 
-                if config.get('claim_existing_positions', True):
+                if state_loaded:
+                    # 已从持久化恢复簿记，不覆盖持仓和现金，
+                    # 只登记已认领标的防止其他策略重复认领
+                    if config.get('claim_existing_positions', True):
+                        claimed_symbols.update(book._positions.keys())
+                    self.logger.info(f'[{instance_id}] 已从持久化恢复，跳过账户初始化')
+                elif config.get('claim_existing_positions', True):
                     book.initialize_from_account(
                         actual_positions, actual_cash, claimed_symbols,
                         cash_ratio=cash_ratio
@@ -322,8 +328,11 @@ class StrategyInstanceManager:
             return 0.0
         try:
             account = api.trader.get_account()
-            if account and hasattr(account, 'cash'):
-                return account.cash
+            if account:
+                for attr in ('cash', 'm_dAvailable'):
+                    value = getattr(account, attr, None)
+                    if value is not None:
+                        return value
         except Exception as e:
             self.logger.error(f'查询账户现金失败: {e}')
         return 0.0

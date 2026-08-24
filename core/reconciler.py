@@ -175,6 +175,34 @@ class Reconciler:
                     f'簿记={drift.book_volume}, 实际={drift.actual_volume}, 需人工确认'
                 )
 
+        # 现金校准：单策略独占账户时直接校准到实际值，
+        # 多策略时按比例分配偏差（跳过虚拟资金实例）
+        if result.cash_drift:
+            non_virtual_books = [b for b in self._books if not getattr(b, '_is_virtual', False)]
+            if len(non_virtual_books) == 1:
+                book = non_virtual_books[0]
+                if not book.has_pending_orders():
+                    old_cash = book.get_cash()
+                    book.set_cash(result.cash_drift.actual_cash)
+                    self.logger.info(
+                        f'现金自动校准: {book.strategy_id} '
+                        f'簿记={old_cash:.2f} → 实际={result.cash_drift.actual_cash:.2f}'
+                    )
+            elif len(non_virtual_books) > 1 and abs(result.cash_drift.diff) > 1.0:
+                total_book_cash = sum(b.get_cash_balance() for b in non_virtual_books)
+                if total_book_cash > 0:
+                    for book in non_virtual_books:
+                        if book.has_pending_orders():
+                            continue
+                        ratio = book.get_cash_balance() / total_book_cash
+                        share = result.cash_drift.diff * ratio
+                        old_cash = book.get_cash()
+                        book.set_cash(old_cash + share)
+                        self.logger.info(
+                            f'现金按比例校准: {book.strategy_id} '
+                            f'簿记={old_cash:.2f} → {old_cash + share:.2f} (分摊={share:.2f})'
+                        )
+
     def _build_holders_map(self) -> Dict[str, List[VirtualBook]]:
         """构建标的 → 持有人映射"""
         holders_map: Dict[str, List[VirtualBook]] = {}
@@ -193,7 +221,13 @@ class Reconciler:
             if positions:
                 for pos in positions:
                     symbol = getattr(pos, 'stock_code', str(pos))
-                    volume = getattr(pos, 'volume', 0)
+                    # 兼容新旧版 xtquant（volume / m_nVolume）
+                    volume = 0
+                    for attr in ('volume', 'm_nVolume'):
+                        value = getattr(pos, attr, None)
+                        if value is not None:
+                            volume = value
+                            break
                     if volume > 0:
                         result[symbol] = volume
         except Exception as e:
@@ -206,8 +240,12 @@ class Reconciler:
             return 0.0
         try:
             account = self._trader.get_account()
-            if account and hasattr(account, 'cash'):
-                return account.cash
+            if account:
+                # 兼容新旧版 xtquant（cash / m_dAvailable）
+                for attr in ('cash', 'm_dAvailable'):
+                    value = getattr(account, attr, None)
+                    if value is not None:
+                        return value
         except Exception as e:
             self.logger.error(f'查询账户现金失败: {e}')
         return 0.0
