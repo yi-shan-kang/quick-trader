@@ -4,13 +4,18 @@
 qmt_backtrader/
 ├── README.md                        # 项目说明文档
 ├── main.py                          # 主入口文件
-├── convert_all_stocks.py            # 批量股票数据转换脚本
-├── convert_minute_hfq.py             # 分钟级后复权数据转换（聚宽 CSV → 后复权）
-├── download_open_market_data.py      # 行情数据预下载脚本（OpenData）
-├── download_qmt_financial_data.py    # QMT 财务数据预下载脚本
-├── download_qmt_market_data.py       # QMT 行情数据预下载脚本
-├── download_futu_market_data.py      # 富途行情数据预下载脚本
-├── download_futu_capital_flow.py     # 富途资金流向数据下载脚本
+├── DATA/                            # 数据抓取与本地数据目录
+│   ├── convert_all_stocks.py        # 批量股票数据转换脚本
+│   ├── convert_minute_hfq.py         # 分钟级后复权数据转换（聚宽 CSV → 后复权）
+│   ├── download_etf_data.py         # ETF 历史数据下载脚本（AkShare）
+│   ├── download_etf_tencent.py      # ETF 历史数据下载脚本（腾讯财经）
+│   ├── download_etf_qmt.py          # ETF 历史数据下载脚本（MiniQMT）
+│   ├── download_open_market_data.py  # 行情数据预下载脚本（OpenData）
+│   ├── download_qmt_financial_data.py# QMT 财务数据预下载脚本
+│   ├── download_qmt_market_data.py   # QMT 行情数据预下载脚本
+│   ├── download_futu_market_data.py  # 富途行情数据预下载脚本
+│   ├── download_futu_capital_flow.py # 富途资金流向数据下载脚本
+│   └── cache/                       # 本地数据缓存（*.pkl / *.csv）
 ├── clean_old_logs.bat               # 清理过期日志批处理
 ├── start_web.bat                    # 启动 Web 查看器批处理
 ├── docs/                            # 详细文档

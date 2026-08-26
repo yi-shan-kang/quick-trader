@@ -869,6 +869,10 @@ class QMTDataProcessor(DataProcessor):
             self.logger.warning("xtquant 未安装，无法下载财务数据")
             return
 
+        # 统一日期格式为 YYYYMMDD（download_financial_data2 要求无横杠格式）
+        start_time = (start_time or '').replace('-', '')
+        end_time = (end_time or '').replace('-', '')
+
         # 新增：过滤退市股票
         from core.cache import cache_manager
         delisted = []
@@ -1146,7 +1150,8 @@ class QMTDataProcessor(DataProcessor):
                     dl_start = time.time()
                     data = self.xtdata.get_financial_data(
                         [stock], tables_to_download,
-                        start_time=start_time, end_time=end_time,
+                        start_time=(start_time or '').replace('-', ''),
+                        end_time=(end_time or '').replace('-', ''),
                         report_type=report_type,
                     )
                     dl_elapsed = time.time() - dl_start

@@ -1,0 +1,1 @@
+from .seven_star_etf_strategy import SevenStarETFRotationStrategy

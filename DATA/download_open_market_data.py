@@ -13,6 +13,8 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import pandas as pd
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from core.cache import cache_manager
 from core.data.index_constituent import IndexConstituentManager
 from core.data.opendata import OpenDataProcessor
