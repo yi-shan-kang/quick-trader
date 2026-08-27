@@ -373,17 +373,18 @@ def calculate_momentum_metrics(context, etf):
                     log.debug(f"{etf}: 高位放量（{volume_ratio:.2f}倍），年化{volume_annualized:.2f}，过滤")
                     return None
 
-        # 长期动量计算
+        # 长期动量计算（指数衰减加权）
         recent_price_series = price_series[-(g.lookback_days + 1):]
         y = np.log(recent_price_series)
         x = np.arange(len(y))
-        weights = np.linspace(1, 2, len(y))
+        weights = exp_decay_weights(len(y))
 
         slope, intercept = np.polyfit(x, y, 1, w=weights)
         annualized_returns = math.exp(slope * 250) - 1
 
         ss_res = np.sum(weights * (y - (slope * x + intercept)) ** 2)
-        ss_tot = np.sum(weights * (y - np.mean(y)) ** 2)
+        y_wmean = np.average(y, weights=weights)
+        ss_tot = np.sum(weights * (y - y_wmean) ** 2)
         r_squared = 1 - ss_res / ss_tot if ss_tot else 0
 
         if g.use_r2_filter:
@@ -480,12 +481,23 @@ def get_volume_ratio(context, security, lookback_days=None, threshold=None):
         log.warning(f"成交量检测失败 {security}: {e}")
         return None
 
+# =================== 指数衰减权重 ===================
+def exp_decay_weights(n, half_life=10):
+    """指数衰减权重：最新数据权重=1，半衰期 half_life 天
+
+    替代原 linspace(1, 2) 线性权重。线性权重对近期数据的偏好极其有限
+    （等效样本量≈等权），指数衰减能真正突出近期趋势。
+    """
+    age = np.arange(n)[::-1]  # 最新=0，最旧=n-1
+    return np.exp(-np.log(2) / half_life * age)
+
+
 # =================== 计算年化收益 ===================
 def get_annualized_returns(price_series, lookback_days):
     recent_price_series = price_series[-(lookback_days + 1):]
     y = np.log(recent_price_series)
     x = np.arange(len(y))
-    weights = np.linspace(1, 2, len(y))
+    weights = exp_decay_weights(len(y))
 
     slope, intercept = np.polyfit(x, y, 1, w=weights)
     annualized_returns = math.exp(slope * 250) - 1

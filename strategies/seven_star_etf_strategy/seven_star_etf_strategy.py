@@ -124,6 +124,7 @@ class SevenStarETFRotationStrategy(StrategyLogic):
         ('min_score_threshold', 0.0),
         ('max_score_threshold', 5.0),
         ('rebalance_threshold', 0.05),
+        ('half_life', 10),
         ('t_plus_1', False),
     )
 
@@ -297,17 +298,18 @@ class SevenStarETFRotationStrategy(StrategyLogic):
                     if volume_annualized > self.params.volume_return_limit:
                         return None
 
-            # 加权对数线性回归计算年化收益率
+            # 指数衰减加权对数线性回归计算年化收益率
             recent_series = price_series[-(self.params.lookback_days + 1):]
             y = np.log(recent_series)
             x = np.arange(len(y))
-            weights = np.linspace(1, 2, len(y))
+            weights = self._get_momentum_weights(len(y))
 
             slope, intercept = np.polyfit(x, y, 1, w=weights)
             annualized_returns = math.exp(slope * 250) - 1
 
             ss_res = np.sum(weights * (y - (slope * x + intercept)) ** 2)
-            ss_tot = np.sum(weights * (y - np.mean(y)) ** 2)
+            y_wmean = np.average(y, weights=weights)
+            ss_tot = np.sum(weights * (y - y_wmean) ** 2)
             r_squared = 1 - ss_res / ss_tot if ss_tot else 0
 
             # R²过滤
@@ -373,13 +375,28 @@ class SevenStarETFRotationStrategy(StrategyLogic):
             self.log(f'成交量检测失败 {symbol}: {e}', level='warning')
             return None
 
+    @staticmethod
+    def _exp_decay_weights(n: int, half_life: int = 10) -> np.ndarray:
+        """指数衰减权重：最新数据权重=1，半衰期 half_life 天
+
+        替代原 linspace(1, 2) 线性权重。线性权重对近期数据的偏好极其有限
+        （等效样本量≈等权），指数衰减能真正突出近期趋势，同时让远期数据
+        的权重自然衰减。
+        """
+        age = np.arange(n)[::-1]  # 最新=0，最旧=n-1
+        return np.exp(-np.log(2) / half_life * age)
+
+    def _get_momentum_weights(self, n: int) -> np.ndarray:
+        """获取动量计算权重（指数衰减，半衰期由 params.half_life 控制）"""
+        return self._exp_decay_weights(n, half_life=self.params.half_life)
+
     def _get_annualized_returns(self, price_series: np.ndarray,
                                 lookback_days: int) -> float:
-        """计算年化收益率（加权对数线性回归）"""
+        """计算年化收益率（指数衰减加权对数线性回归）"""
         recent = price_series[-(lookback_days + 1):]
         y = np.log(recent)
         x = np.arange(len(y))
-        weights = np.linspace(1, 2, len(y))
+        weights = self._get_momentum_weights(len(y))
 
         slope, _ = np.polyfit(x, y, 1, w=weights)
         return math.exp(slope * 250) - 1
