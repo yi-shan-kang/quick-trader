@@ -13,7 +13,18 @@ logs/*
 .cache
 .workbuddy
 
+# 数据缓存与生成文件（体积大、可重新生成，不上传仓库）
+*.pkl
+*.csv
+
+# 示例目录（策略示例与回测输出，不上传仓库）
+/example/
+
+# 回测报告输出目录（可重新生成，不上传仓库）
+/reports/
+
 *.txt
+!requirements.txt
 
 .codebuddy
 

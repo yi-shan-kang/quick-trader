@@ -1,6 +1,5 @@
 import ast
 import logging
-import time
 from bisect import bisect_right
 from datetime import datetime
 from pathlib import Path
@@ -145,8 +144,9 @@ class IndexConstituentManager:
 
         查询逻辑:
         1. 从CSV文件中查找 <= date 的最近一条记录
-        2. 如果 date 超出CSV最新日期，尝试从QMT获取最新成分股
-        3. 若QMT返回的成分股与CSV最新记录不同，追加新行到CSV
+        2. 若 date 超出CSV覆盖范围，尝试从QMT按历史时点查询（real_timetag）
+        3. 若仍无法获取，明确报错并返回空，
+           绝不回退到当前成分股（否则造成幸存者偏差/未来函数）
 
         Args:
             index_code: 指数代码，如 '000300.SH'
@@ -164,6 +164,7 @@ class IndexConstituentManager:
                 latest_row = df[mask].iloc[-1]
                 latest_date = latest_row['date']
 
+                # 查询日期超出CSV最新记录 → 尝试从QMT按历史时点补充
                 if target_date > latest_date:
                     updated = self._try_update_from_qmt(index_code, date, df)
                     if updated:
@@ -177,6 +178,7 @@ class IndexConstituentManager:
 
                 return list(latest_row['codes'])
 
+        # CSV无覆盖 → 尝试从QMT按历史时点查询
         updated = self._try_update_from_qmt(index_code, date, df)
         if updated:
             self._cache.pop(index_code, None)
@@ -187,6 +189,12 @@ class IndexConstituentManager:
                 if mask.any():
                     return list(df[mask].iloc[-1]['codes'])
 
+        # 历史成分股缺失：绝不能静默用当前成分股（幸存者偏差）
+        self.logger.error(
+            f"缺少 {index_code} 在 {date} 的历史成分股数据，无法正确回测。"
+            f"请先补齐 .cache/JQData/index_constituent/{index_code}.csv，"
+            f"或在QMT客户端【历史数据下载】中下载“板块成分股历史变动信息”。"
+        )
         return []
 
     def _try_update_from_qmt(self, index_code: str, date: str,
@@ -201,10 +209,27 @@ class IndexConstituentManager:
             return False
 
         try:
-            stock_list = self.xtdata.get_stock_list_in_sector(sector)
+            # QMT 支持按历史时点查询成分股（real_timetag），
+            # 前提：客户端【历史数据下载】已下载“板块成分股历史变动信息”。
+            stock_list = self.xtdata.get_stock_list_in_sector(sector, real_timetag=date.replace('-', ''))
             if not stock_list or len(stock_list) < 10:
-                self.logger.warning(f"QMT返回 {sector} 成分股数量异常: {len(stock_list) if stock_list else 0}")
+                self.logger.warning(
+                    f"QMT返回 {sector} 在 {date} 的成分股数量异常: "
+                    f"{len(stock_list) if stock_list else 0}，可能是未下载板块成分股历史变动数据"
+                )
                 return False
+
+            # 防护：查询历史日期却返回与当前成分股完全一致，说明本地未下载历史变动数据
+            # （QMT 回退到当前成分股），该结果不可信，拒绝写入以避免幸存者偏差。
+            today = datetime.now().strftime('%Y-%m-%d')
+            if date[:10] < today:
+                current = self.xtdata.get_stock_list_in_sector(sector)
+                if current and set(stock_list) == set(current):
+                    self.logger.warning(
+                        f"QMT查询 {sector} {date} 历史成分股与当前完全一致，"
+                        f"疑似未下载板块成分股历史变动数据，跳过QMT结果"
+                    )
+                    return False
 
             if existing_df is not None and not existing_df.empty:
                 latest_row = existing_df.iloc[-1]
@@ -220,36 +245,33 @@ class IndexConstituentManager:
                 self.logger.info(f"{index_code} 成分股有变化: "
                                  f"新纳入 {len(diff_in)} 只, 剔除 {len(diff_out)} 只")
 
-            today = datetime.now().strftime('%Y-%m-%d')
-            self._append_to_csv(index_code, today, stock_list)
+            self._append_to_csv(index_code, date, stock_list)
             return True
 
         except Exception as e:
-            self.logger.warning(f"从QMT获取 {index_code} 成分股失败: {e}")
+            self.logger.warning(f"从QMT获取 {index_code} {date} 成分股失败: {e}")
             return False
 
     def _append_to_csv(self, index_code: str, date: str, stock_list: List[str]) -> None:
         csv_path = self.data_dir / f"{index_code}.csv"
         sorted_stocks = sorted(stock_list)
         codes_str = str(sorted_stocks)
+        new_row = pd.DataFrame({'date': [pd.Timestamp(date)], 'codes': [codes_str]})
 
         if csv_path.exists():
             existing = pd.read_csv(csv_path)
-            last_date = pd.to_datetime(existing['date'].iloc[-1])
-            new_date = pd.Timestamp(date)
-            if new_date <= last_date:
-                self.logger.debug(f"跳过追加: {date} 不晚于CSV最新日期 {last_date.strftime('%Y-%m-%d')}")
-                return
-
-            new_row = pd.DataFrame({'date': [date], 'codes': [codes_str]})
+            existing['date'] = pd.to_datetime(existing['date'])
             combined = pd.concat([existing, new_row], ignore_index=True)
+            # 允许插入历史日期（可能早于已有记录），去重后按日期排序，
+            # 保证查询时始终能取到 <= 查询日期 的最近一条记录
+            combined = combined.drop_duplicates(subset='date', keep='last')
+            combined = combined.sort_values('date').reset_index(drop=True)
             combined.to_csv(csv_path, index=False)
         else:
             self.data_dir.mkdir(parents=True, exist_ok=True)
-            new_row = pd.DataFrame({'date': [date], 'codes': [codes_str]})
             new_row.to_csv(csv_path, index=False)
 
-        self.logger.info(f"已更新 {csv_path.name}: 追加 {date}, {len(stock_list)} 只成分股")
+        self.logger.info(f"已更新 {csv_path.name}: 记录 {date}, {len(stock_list)} 只成分股")
 
     def get_all_constituent_stocks_in_range(self, index_code: str,
                                              start_date: str,

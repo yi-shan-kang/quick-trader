@@ -216,8 +216,9 @@ class IndustryConstituentManager:
 
         查询逻辑:
         1. 从CSV文件中查找 <= date 的最近一条记录
-        2. 如果 date 超出CSV最新日期，尝试从QMT获取最新成分股
-        3. 若QMT返回的成分股与CSV最新记录不同，追加新行到CSV
+        2. 若 date 超出CSV覆盖范围，尝试从QMT按历史时点查询（real_timetag）
+        3. 若仍无法获取，明确报错并返回空，
+           绝不回退到当前成分股（否则造成幸存者偏差/未来函数）
 
         Args:
             industry: 行业名称，如 '银行', '电子', 'SW1银行' 均可
@@ -235,6 +236,7 @@ class IndustryConstituentManager:
                 latest_row = df[mask].iloc[-1]
                 latest_date = latest_row['date']
 
+                # 查询日期超出CSV最新记录 → 尝试从QMT按历史时点补充
                 if target_date > latest_date:
                     updated = self._try_update_from_qmt(industry, date, df)
                     if updated:
@@ -250,6 +252,7 @@ class IndustryConstituentManager:
 
                 return list(latest_row['codes'])
 
+        # CSV无覆盖 → 尝试从QMT按历史时点查询
         updated = self._try_update_from_qmt(industry, date, df)
         if updated:
             csv_key = self._csv_key(industry)
@@ -262,6 +265,12 @@ class IndustryConstituentManager:
                 if mask.any():
                     return list(df[mask].iloc[-1]['codes'])
 
+        # 历史行业成分股缺失：绝不能静默用当前成分股（幸存者偏差）
+        self.logger.error(
+            f"缺少行业 {industry} 在 {date} 的历史成分股数据，无法正确回测。"
+            f"请先补齐 .cache/JQData/industry_constituent 下的历史行业成分股CSV，"
+            f"或在QMT客户端【历史数据下载】中下载“板块成分股历史变动信息”。"
+        )
         return []
 
     def get_industry_mapping(self, stock_list: List[str],
@@ -338,10 +347,27 @@ class IndustryConstituentManager:
         sector_name = self._qmt_sector_name(industry)
 
         try:
-            stock_list = self.xtdata.get_stock_list_in_sector(sector_name)
+            # QMT 支持按历史时点查询成分股（real_timetag），
+            # 前提：客户端【历史数据下载】已下载“板块成分股历史变动信息”。
+            stock_list = self.xtdata.get_stock_list_in_sector(sector_name, real_timetag=date.replace('-', ''))
             if not stock_list or len(stock_list) < 1:
-                self.logger.warning(f"QMT返回 {sector_name} 成分股数量异常: {len(stock_list) if stock_list else 0}")
+                self.logger.warning(
+                    f"QMT返回 {sector_name} 在 {date} 的成分股数量异常: "
+                    f"{len(stock_list) if stock_list else 0}，可能是未下载板块成分股历史变动数据"
+                )
                 return False
+
+            # 防护：查询历史日期却返回与当前成分股完全一致，说明本地未下载历史变动数据
+            # （QMT 回退到当前成分股），该结果不可信，拒绝写入以避免幸存者偏差。
+            today = datetime.now().strftime('%Y-%m-%d')
+            if date[:10] < today:
+                current = self.xtdata.get_stock_list_in_sector(sector_name)
+                if current and set(stock_list) == set(current):
+                    self.logger.warning(
+                        f"QMT查询 {sector_name} {date} 历史成分股与当前完全一致，"
+                        f"疑似未下载板块成分股历史变动数据，跳过QMT结果"
+                    )
+                    return False
 
             if existing_df is not None and not existing_df.empty:
                 latest_row = existing_df.iloc[-1]
@@ -357,12 +383,11 @@ class IndustryConstituentManager:
                 self.logger.info(f"{sector_name} 行业成分股有变化: "
                                  f"新纳入 {len(diff_in)} 只, 剔除 {len(diff_out)} 只")
 
-            today = datetime.now().strftime('%Y-%m-%d')
-            self._append_to_csv(industry, today, stock_list)
+            self._append_to_csv(industry, date, stock_list)
             return True
 
         except Exception as e:
-            self.logger.warning(f"从QMT获取 {sector_name} 行业成分股失败: {e}")
+            self.logger.warning(f"从QMT获取 {sector_name} {date} 行业成分股失败: {e}")
             return False
 
     def _append_to_csv(self, industry: str, date: str, stock_list: List[str]) -> None:
@@ -373,21 +398,19 @@ class IndustryConstituentManager:
 
         if csv_path.exists():
             existing = pd.read_csv(csv_path)
-            last_date = pd.to_datetime(existing['date'].iloc[-1])
-            new_date = pd.Timestamp(date)
-            if new_date <= last_date:
-                self.logger.debug(f"跳过追加: {date} 不晚于CSV最新日期 {last_date.strftime('%Y-%m-%d')}")
-                return
-
-            new_row = pd.DataFrame({'date': [date], 'codes': [codes_str]})
+            existing['date'] = pd.to_datetime(existing['date'])
+            new_row = pd.DataFrame({'date': [pd.Timestamp(date)], 'codes': [codes_str]})
             combined = pd.concat([existing, new_row], ignore_index=True)
+            # 允许插入历史日期（可能早于已有记录），去重后按日期排序
+            combined = combined.drop_duplicates(subset='date', keep='last')
+            combined = combined.sort_values('date').reset_index(drop=True)
             combined.to_csv(csv_path, index=False)
         else:
             self.data_dir.mkdir(parents=True, exist_ok=True)
             new_row = pd.DataFrame({'date': [date], 'codes': [codes_str]})
             new_row.to_csv(csv_path, index=False)
 
-        self.logger.info(f"已更新 {csv_path.name}: 追加 {date}, {len(stock_list)} 只成分股")
+        self.logger.info(f"已更新 {csv_path.name}: 记录 {date}, {len(stock_list)} 只成分股")
 
     def get_available_industries(self) -> List[str]:
         """获取本地CSV文件中可用的行业列表"""

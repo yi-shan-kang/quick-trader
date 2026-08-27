@@ -15,7 +15,9 @@ import numpy as np
 import pandas as pd
 
 sys.stdout.reconfigure(encoding='utf-8')
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# 项目根目录加入路径（脚本位于 DATA/ 下，父目录即项目根）
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, PROJECT_ROOT)
 
 from xtquant import xtdata
 
@@ -70,9 +72,8 @@ def download_etf(code, exchange):
 
 
 def main():
-    # 加载现有缓存
-    cache_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                              'DATA', 'cache', 'etf_data_cache_qmt_10y.pkl')
+    # 加载现有缓存（DATA/cache/ 下）
+    cache_path = os.path.join(PROJECT_ROOT, 'DATA', 'cache', 'etf_data_cache_qmt_10y.pkl')
     with open(cache_path, 'rb') as f:
         all_data = pickle.load(f)
     print(f'现有缓存: {len(all_data)} 只', flush=True)
@@ -93,8 +94,7 @@ def main():
             print(f'FAIL {symbol}: {type(e).__name__} {e}', flush=True)
         time.sleep(0.2)
 
-    out_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            'DATA', 'cache', 'etf_data_cache_qmt_10y.pkl')
+    out_path = os.path.join(PROJECT_ROOT, 'DATA', 'cache', 'etf_data_cache_qmt_10y.pkl')
     with open(out_path, 'wb') as f:
         pickle.dump(all_data, f)
     print(f'缓存已更新: {len(all_data)} 只 -> {out_path}', flush=True)

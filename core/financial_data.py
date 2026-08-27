@@ -122,9 +122,11 @@ class FinancialDataCache:
                                     start_time: str, end_time: str) -> None:
         """_ensure_table_loaded 的内部实现，调用方已持有 self._lock"""
 
-        # 新增：检查退市状态，永久跳过
+        # 检查退市状态：仅跳过“退市日早于回测起始日”的股票，
+        # 退市日在回测区间内的股票必须保留其退市前的历史财务数据（避免幸存者偏差）
         from core.cache import cache_manager
-        if cache_manager.index_manager.is_delisted(stock_code):
+        effective_start = start_time if start_time else self._start_time
+        if cache_manager.index_manager.should_skip_delisted(stock_code, effective_start or ''):
             self.logger.debug(f"跳过退市股票: {stock_code}.{table_name}")
             if stock_code not in self._data:
                 self._data[stock_code] = {}

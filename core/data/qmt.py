@@ -654,10 +654,11 @@ class QMTDataProcessor(DataProcessor):
         """
         batch_desc = f"[{batch_idx}/{total_batches}]"
 
-        # 新增：过滤退市股票
+        # 过滤退市股票：仅跳过“退市日早于回测起始日”的股票，
+        # 退市日在回测区间内的股票必须保留其退市前的历史数据（避免幸存者偏差）
         from core.cache import cache_manager
-        active_batch = [s for s in batch if not cache_manager.index_manager.is_delisted(s)]
-        delisted_in_batch = [s for s in batch if cache_manager.index_manager.is_delisted(s)]
+        active_batch = [s for s in batch if not cache_manager.index_manager.should_skip_delisted(s, start_time)]
+        delisted_in_batch = [s for s in batch if cache_manager.index_manager.should_skip_delisted(s, start_time)]
 
         if delisted_in_batch:
             self.logger.info(f"{batch_desc} 跳过 {len(delisted_in_batch)} 只退市股票")
@@ -873,12 +874,13 @@ class QMTDataProcessor(DataProcessor):
         start_time = (start_time or '').replace('-', '')
         end_time = (end_time or '').replace('-', '')
 
-        # 新增：过滤退市股票
+        # 过滤退市股票：仅跳过“退市日早于回测起始日”的股票，
+        # 退市日在回测区间内的股票必须保留其退市前的历史财务数据（避免幸存者偏差）
         from core.cache import cache_manager
         delisted = []
         active_stocks = []
         for stock in stock_list:
-            if cache_manager.index_manager.is_delisted(stock):
+            if cache_manager.index_manager.should_skip_delisted(stock, start_time):
                 delisted.append(stock)
                 continue
             active_stocks.append(stock)
@@ -1074,9 +1076,9 @@ class QMTDataProcessor(DataProcessor):
         self.logger.info(f"开始获取财务数据: {total} 只股票, 表: {', '.join(tables)}, 请求年份={req_years or '全部'}")
 
         for i, stock in enumerate(stock_list, 1):
-            # 新增：跳过退市股票
+            # 跳过“退市日早于回测起始日”的股票；退市日在回测区间内的股票保留历史数据（避免幸存者偏差）
             from core.cache import cache_manager as _cm
-            if _cm.index_manager.is_delisted(stock):
+            if _cm.index_manager.should_skip_delisted(stock, start_time):
                 self.logger.debug(f"跳过退市股票: {stock}")
                 continue
 
@@ -1413,21 +1415,27 @@ class QMTDataProcessor(DataProcessor):
                     self.logger.info(f"本地CSV成分股: {sector}, date={date}, 共 {len(result)} 只")
                     return result
 
-        # 1. 使用 QMT 历史成分股接口（get_stock_list_in_sector 支持 timetag）
+        # 1. 使用 QMT 按历史时点查询成分股（real_timetag），
+        # 前提：客户端【历史数据下载】已下载“板块成分股历史变动信息”。
         if self.xtdata and date:
             try:
-                import time as _time
-                dt_obj = datetime.strptime(date, '%Y-%m-%d')
-                timetag = int(_time.mktime(dt_obj.timetuple()) * 1000)
-                stock_list = self.xtdata.get_stock_list_in_sector(sector, timetag)
+                stock_list = self.xtdata.get_stock_list_in_sector(sector, real_timetag=date.replace('-', ''))
                 if stock_list and len(stock_list) > 10:
-                    self.logger.info(
-                        f"QMT历史成分股: {sector}, date={date}, "
-                        f"共 {len(stock_list)} 只"
+                    today_str = datetime.now().strftime('%Y-%m-%d')
+                    if date[:10] >= today_str:
+                        # 查询当前/未来 → 直接返回
+                        return stock_list
+                    # 历史日期：若返回与当前成分股一致，说明本地未下载历史变动数据，不可信
+                    current = self.xtdata.get_stock_list_in_sector(sector)
+                    if not current or set(stock_list) != set(current):
+                        self.logger.info(f"QMT历史成分股: {sector}, date={date}, 共 {len(stock_list)} 只")
+                        return stock_list
+                    self.logger.warning(
+                        f"QMT查询 {sector} {date} 历史成分股与当前一致，"
+                        f"疑似未下载板块成分股历史变动数据，跳过QMT结果"
                     )
-                    return stock_list
             except Exception as e:
-                self.logger.debug(f"QMT获取历史成分股失败: {e}")
+                self.logger.debug(f"QMT获取成分股失败: {e}")
 
         # 2. 使用 OpenData 获取历史成分股（基于纳入/剔除日期还原）
         if self._opendata:
@@ -1438,9 +1446,83 @@ class QMTDataProcessor(DataProcessor):
             except Exception as e:
                 self.logger.warning(f"OpenData获取历史成分股失败: {e}")
 
-        # 3. 回退到当前成分股
+        # 3. 回退到当前成分股（危险：会造成幸存者偏差）
+        if date and date[:10] < datetime.now().strftime('%Y-%m-%d'):
+            raise RuntimeError(
+                f"无法获取 {sector} 在 {date} 的历史成分股，回测已中止以避免幸存者偏差（未来函数）。"
+                f"请在QMT客户端【历史数据下载】下载“板块成分股历史变动信息”，"
+                f"或用 jqdata/获取指数成分股.ipynb 补齐 "
+                f".cache/JQData/index_constituent/ 下的历史成分股CSV数据。"
+            )
         self.logger.warning(f"历史成分股获取失败，使用当前成分股: {sector}")
         return self.get_stock_list(sector)
+
+    def get_index_constituent_history(self, index_code: str,
+                                      start_time: str = '', end_time: str = '') -> Optional[pd.DataFrame]:
+        """获取指数/板块成分股变动历史（period='stocklistchange'）
+
+        通过 get_market_data_ex(period='stocklistchange') 获取板块成分股的历史变动记录。
+        这是迅投官方获取历史成分股的接口，一次返回完整变动序列，比逐日查询
+        get_stock_list_in_sector(real_timetag) 更高效。
+
+        注意：该数据属于"投研版特色数据"，需要 QMT 客户端已下载对应数据
+        （客户端【历史数据下载】→ 板块成分股历史变动信息）。
+
+        Args:
+            index_code: 指数代码，如 '000852.SH'（或板块名称）
+            start_time: 起始时间 'YYYYMMDD'，空为最早
+            end_time: 结束时间 'YYYYMMDD'，空为最新
+
+        Returns:
+            DataFrame（成分股变动历史）；无数据/未连接返回 None
+        """
+        if not self.xtdata:
+            self.logger.warning("QMT未连接，无法获取成分股变动历史")
+            return None
+
+        try:
+            raw = self.xtdata.get_market_data_ex(
+                [], [index_code], period='stocklistchange',
+                start_time=start_time, end_time=end_time, count=-1
+            )
+            df = self._parse_constituent_change_history(raw, index_code)
+            if df is None or df.empty:
+                self.logger.warning(
+                    f"QMT未返回 {index_code} 的板块成分股变动历史，"
+                    f"可能未下载该数据或当前QMT版本不支持stocklistchange"
+                )
+            return df
+        except Exception as e:
+            self.logger.warning(f"获取 {index_code} 成分股变动历史失败: {e}")
+            return None
+
+    def _parse_constituent_change_history(self, raw, index_code: str) -> Optional[pd.DataFrame]:
+        """解析 get_market_data_ex(period='stocklistchange') 的返回结构
+
+        返回可能是 dict {field: DataFrame} 或 dict {stock: DataFrame}，
+        统一提取为 DataFrame 并确保 index 为 DatetimeIndex。
+        """
+        if raw is None:
+            return None
+
+        df = None
+        if isinstance(raw, dict):
+            df = raw.get(index_code)
+            if df is None and raw:
+                df = next(iter(raw.values()))
+        elif isinstance(raw, pd.DataFrame):
+            df = raw
+
+        if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+            return None
+
+        if not isinstance(df.index, pd.DatetimeIndex):
+            try:
+                df.index = pd.to_datetime(df.index)
+            except Exception:
+                pass
+
+        return df
 
     def get_all_historical_stocks_in_range(self, sector: str = '沪深A股',
                                             start_date: Optional[str] = None,
@@ -1472,7 +1554,16 @@ class QMTDataProcessor(DataProcessor):
                     self.logger.info(f"回测期间 {sector} 全部历史成分股: 共 {len(result)} 只")
                     return result
 
-        # 回退：只用起始日期的成分股
+        # 回退：无法获取区间内全部历史成分股。
+        # 历史回测绝不能用当前成分股凑数（幸存者偏差/未来函数），直接中止并提示补齐数据。
+        if start_date and start_date[:10] < datetime.now().strftime('%Y-%m-%d'):
+            raise RuntimeError(
+                f"无法获取 {sector} 回测期间({start_date}~{end_date})的历史成分股，"
+                f"回测已中止以避免幸存者偏差（未来函数）。"
+                f"请在QMT客户端【历史数据下载】下载“板块成分股历史变动信息”，"
+                f"或用 jqdata/获取指数成分股.ipynb 补齐 "
+                f".cache/JQData/index_constituent/ 下的历史成分股CSV数据。"
+            )
         self.logger.warning(f"无法获取回测期间全部成分股，回退到起始日期成分股")
         return self.get_historical_stock_list(sector, date=start_date)
 

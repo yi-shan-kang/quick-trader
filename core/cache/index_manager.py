@@ -451,6 +451,34 @@ class CacheIndexManager:
                 return date
             return None
 
+    def should_skip_delisted(self, symbol: str, start_time: str = '') -> bool:
+        """判断退市股是否应在指定回测区间内跳过
+
+        退市股在退市前仍有历史数据（行情/财务），仅当退市日早于回测起始日时才应跳过；
+        否则（退市日在回测区间内）必须保留其历史数据，否则会造成幸存者偏差。
+
+        Args:
+            symbol: 股票代码
+            start_time: 回测起始时间，格式 'YYYY-MM-DD' 或 'YYYYMMDD'，为空表示不按时间跳过
+
+        Returns:
+            True 表示该股在回测区间内无数据（退市早于起始日），可跳过
+        """
+        if not self.is_delisted(symbol):
+            return False
+        delist_date = self.get_delist_date(symbol)
+        if not delist_date:
+            # 退市但日期未知：保守保留（可能有历史数据）
+            return False
+        if start_time:
+            st = start_time[:10]
+            # 兼容 YYYYMMDD（8位无横杠）格式，统一转为 YYYY-MM-DD
+            if len(st) == 8 and st.isdigit():
+                st = f"{st[:4]}-{st[4:6]}-{st[6:8]}"
+            if delist_date < st:
+                return True
+        return False
+
     def mark_suspended(self, symbol: str, ranges: List[List[str]]) -> None:
         with self.lock:
             self._suspended_ranges[symbol] = ranges
