@@ -125,6 +125,9 @@ class SevenStarETFRotationStrategy(StrategyLogic):
         ('max_score_threshold', 5.0),
         ('rebalance_threshold', 0.05),
         ('half_life', 10),
+        # 复刻开关（用于对比聚宽原版，默认使用改进版）
+        ('weight_mode', 'exp_decay'),   # 'exp_decay'=指数衰减(默认) | 'linear'=聚宽原版linspace(1,2)
+        ('r2_use_weighted_mean', True),  # True=加权均值(修复版) | False=普通均值(聚宽原版含bug)
         ('t_plus_1', False),
     )
 
@@ -298,7 +301,7 @@ class SevenStarETFRotationStrategy(StrategyLogic):
                     if volume_annualized > self.params.volume_return_limit:
                         return None
 
-            # 指数衰减加权对数线性回归计算年化收益率
+            # 加权对数线性回归计算年化收益率（权重方式由 params.weight_mode 控制）
             recent_series = price_series[-(self.params.lookback_days + 1):]
             y = np.log(recent_series)
             x = np.arange(len(y))
@@ -308,7 +311,10 @@ class SevenStarETFRotationStrategy(StrategyLogic):
             annualized_returns = math.exp(slope * 250) - 1
 
             ss_res = np.sum(weights * (y - (slope * x + intercept)) ** 2)
-            y_wmean = np.average(y, weights=weights)
+            if self.params.r2_use_weighted_mean:
+                y_wmean = np.average(y, weights=weights)
+            else:
+                y_wmean = np.mean(y)  # 聚宽原版写法（统计上有偏差）
             ss_tot = np.sum(weights * (y - y_wmean) ** 2)
             r_squared = 1 - ss_res / ss_tot if ss_tot else 0
 
@@ -387,7 +393,13 @@ class SevenStarETFRotationStrategy(StrategyLogic):
         return np.exp(-np.log(2) / half_life * age)
 
     def _get_momentum_weights(self, n: int) -> np.ndarray:
-        """获取动量计算权重（指数衰减，半衰期由 params.half_life 控制）"""
+        """获取动量计算权重
+
+        weight_mode='exp_decay' (默认): 指数衰减，半衰期由 params.half_life 控制
+        weight_mode='linear': 聚宽原版 linspace(1, 2) 线性权重（复刻对比用）
+        """
+        if self.params.weight_mode == 'linear':
+            return np.linspace(1, 2, n)
         return self._exp_decay_weights(n, half_life=self.params.half_life)
 
     def _get_annualized_returns(self, price_series: np.ndarray,

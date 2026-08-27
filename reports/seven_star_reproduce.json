@@ -1,0 +1,74 @@
+[
+  {
+    "label": "A聚宽全复刻(万1/线性/普通R²)",
+    "slippage": 0.0001,
+    "weight_mode": "linear",
+    "r2_wmean": false,
+    "total_return": 1.646,
+    "annual_return": 0.5156,
+    "sharpe": 1.541,
+    "max_drawdown": -0.2489,
+    "trades": 125,
+    "win_rate": 0.504
+  },
+  {
+    "label": "B滑点千1(线性/普通R²)",
+    "slippage": 0.001,
+    "weight_mode": "linear",
+    "r2_wmean": false,
+    "total_return": 1.1155,
+    "annual_return": 0.3774,
+    "sharpe": 1.203,
+    "max_drawdown": -0.2817,
+    "trades": 125,
+    "win_rate": 0.496
+  },
+  {
+    "label": "C指数衰减(千1/普通R²)",
+    "slippage": 0.001,
+    "weight_mode": "exp_decay",
+    "r2_wmean": false,
+    "total_return": -0.0462,
+    "annual_return": -0.02,
+    "sharpe": -0.032,
+    "max_drawdown": -0.4617,
+    "trades": 130,
+    "win_rate": 0.4308
+  },
+  {
+    "label": "D加权R²(千1/线性)",
+    "slippage": 0.001,
+    "weight_mode": "linear",
+    "r2_wmean": true,
+    "total_return": 1.0691,
+    "annual_return": 0.3644,
+    "sharpe": 1.169,
+    "max_drawdown": -0.2966,
+    "trades": 135,
+    "win_rate": 0.4741
+  },
+  {
+    "label": "E全改进(千1/指数/加权R²)",
+    "slippage": 0.001,
+    "weight_mode": "exp_decay",
+    "r2_wmean": true,
+    "total_return": 0.515,
+    "annual_return": 0.1942,
+    "sharpe": 0.764,
+    "max_drawdown": -0.3384,
+    "trades": 129,
+    "win_rate": 0.4961
+  },
+  {
+    "label": "F万1+线性+加权R²",
+    "slippage": 0.0001,
+    "weight_mode": "linear",
+    "r2_wmean": true,
+    "total_return": 1.5955,
+    "annual_return": 0.5032,
+    "sharpe": 1.515,
+    "max_drawdown": -0.2631,
+    "trades": 140,
+    "win_rate": 0.5143
+  }
+]
