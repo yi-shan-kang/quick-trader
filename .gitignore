@@ -13,6 +13,11 @@ logs/*
 .cache
 .workbuddy
 
+# 日志文件与日志目录（不上传仓库）
+*.log
+logs/
+LOG/
+
 # 数据缓存与生成文件（体积大、可重新生成，不上传仓库）
 *.pkl
 *.csv
@@ -25,6 +30,10 @@ logs/*
 
 *.txt
 !requirements.txt
+
+# 回测结果与错误输出目录（可重新生成，不上传仓库）
+/result/
+/error/
 
 .codebuddy
 

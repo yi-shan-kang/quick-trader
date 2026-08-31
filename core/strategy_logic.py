@@ -567,9 +567,39 @@ class StrategyLogic:
                     price = float(cached_df.iloc[pos]['close'])
                     if price > 0:
                         return price
+                    # 不复权价格 <= 0：QMT 数据缺陷（退市/问题股价格字段为0）。
+                    # 不回退到后复权（后复权同样可能是极小错误值），返回 None 让调用方跳过。
+                    return None
             return self.get_current_price(symbol)
 
         return self.get_current_price(symbol)
+
+    def get_last_trade_date(self, symbol: str) -> Optional[dt_module.date]:
+        """获取指定标的最近一个有行情的日期
+
+        用于判断股票是否处于停牌/退市状态：
+        - 调仓日当天有数据 → 返回调仓日
+        - 停牌中 → 返回停牌前的最后交易日
+        - 无任何数据 → 返回 None
+
+        复用不复权DF缓存，不额外加载数据。
+        """
+        import pandas as pd
+
+        current_date = self.get_current_date()
+        if current_date is None:
+            return None
+
+        self._load_unadjusted_df_cache(symbol, current_date)
+        cached_df = self._unadjusted_price_df_cache.get(symbol)
+        if cached_df is not None and not cached_df.empty:
+            if isinstance(cached_df.index, pd.DatetimeIndex):
+                ts = pd.Timestamp(current_date)
+                pos = cached_df.index.searchsorted(ts, side='right') - 1
+                if pos >= 0:
+                    d = cached_df.index[pos]
+                    return d.date() if hasattr(d, 'date') else d
+        return None
 
     def get_unadjusted_close_prices(self, symbol: str, period: int = None) -> List[float]:
         """获取指定标的的不复权收盘价序列
