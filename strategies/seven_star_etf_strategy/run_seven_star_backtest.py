@@ -16,7 +16,7 @@ import pandas as pd
 from pathlib import Path
 
 # 项目根目录加入路径
-project_root = Path(__file__).parent.absolute()
+project_root = Path(__file__).parent.parent.parent.absolute()
 sys.path.insert(0, str(project_root))
 
 # 设置 matplotlib 后端为 Agg（非交互式）

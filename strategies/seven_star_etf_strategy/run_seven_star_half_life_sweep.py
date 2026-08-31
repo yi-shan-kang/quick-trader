@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 
 os.environ['QMT_LOG_LEVEL'] = 'WARNING'
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from api.backtest_api import BacktestAPI
 from strategies.seven_star_etf_strategy.seven_star_etf_strategy import SevenStarETFRotationStrategy

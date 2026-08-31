@@ -1,17 +1,26 @@
 # -*- coding: utf-8 -*-
-"""小市值策略（small_cap）回测 - 中证全指(000985)历史成分股
+"""小市值策略回测 - 按优化报告条件（可配置股票池与风控参数）
 
-- 股票池：中证全指（000985.SH）历史成分股（本地 CSV，完整历史，含退市股）
-- 行情：QMT 本地缓存（后复权/不复权）
-- 财务：QMT 本地缓存（仅 Balance + Pershareindex 两张表）
-- 回测区间：默认 2015-01-01 ~ 2025-12-31，可用命令行参数覆盖
+优化报告条件：
+- 回测区间: 2020-04-28 ~ 2026-04-28
+- 股票池: 中证1000（可用 --sector 切换）
+- 调仓频率: 月度，等权
+- 组合优化: max_volatility=0.04 + stop_loss_pct=0.08
+
+用法：
+    python run_small_cap_backtest_opt.py                     # 报告默认条件（中证1000 + 波动率+止损）
+    python run_small_cap_backtest_opt.py --sector 中证全指   # 全指历史成分股对照
+    python run_small_cap_backtest_opt.py --no-vol --no-stop  # 关闭两项风控（纯基线）
 """
+import argparse
+import json
 import os
 import sys
-import json
 import traceback
 
 os.environ['QMT_LOG_LEVEL'] = 'WARNING'
+# 项目根目录加入路径（脚本位于 strategies/small_cap_strategy/ 下）
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 import pandas as pd
 
@@ -19,19 +28,12 @@ from api.backtest_api import BacktestAPI
 from strategies import get_strategy, get_strategy_default_kwargs, get_strategy_backtest_config
 from core.data.index_constituent import IndexConstituentManager
 
-# 支持命令行参数指定回测区间: python run_small_cap_backtest_985.py [start_date] [end_date]
-START_DATE = sys.argv[1] if len(sys.argv) > 1 else '2015-01-01'
-END_DATE = sys.argv[2] if len(sys.argv) > 2 else '2025-12-31'
-SECTOR = '中证全指'
-
 
 def print_annual_breakdown(result):
-    """输出每年度策略表现明细"""
     df = result.df
     if df is None or df.empty or 'PortfolioValue' not in df.columns:
         return
     d = df.copy()
-    # 日期在 'datetime' 列（而非 index），需显式提取
     if 'datetime' in d.columns:
         d['datetime'] = pd.to_datetime(d['datetime'])
         d['year'] = d['datetime'].dt.year
@@ -45,59 +47,26 @@ def print_annual_breakdown(result):
     print('=' * 70)
     print(f'  {"年份":<6} {"年末净值":>14} {"年度收益率":>12} {"年度最大回撤":>12}')
     print('  ' + '-' * 60)
-
-    rows = []
     for year, grp in d.groupby('year'):
         start_val = grp['PortfolioValue'].iloc[0]
         end_val = grp['PortfolioValue'].iloc[-1]
         yret = end_val / start_val - 1
-        # 年度最大回撤
         equity = grp['PortfolioValue'].values
         peak = pd.Series(equity).cummax().values
         dd = ((equity - peak) / peak).min()
-        rows.append({'year': year, 'end_val': end_val, 'yret': yret, 'dd': dd})
         print(f'  {year:<6} {end_val:>14,.2f} {yret * 100:>11.2f}% {dd * 100:>11.2f}%')
-
-    print('  ' + '-' * 60)
-    return rows
-
-
-def print_rebalance_log(result):
-    """输出调仓记录（每次调仓日的持仓明细）"""
-    trade_log = result.trade_log
-    if not trade_log:
-        print('\n  [提示] 无交易记录')
-        return
-
-    # 提取买入记录，按日期分组
-    buys = {}
-    for t in trade_log:
-        direction = str(getattr(t, 'direction', ''))
-        if direction == '0':  # 买入
-            dt = getattr(t, 'trade_time', None)
-            if dt is None:
-                continue
-            if hasattr(dt, 'strftime'):
-                day = dt.strftime('%Y-%m-%d')
-            else:
-                day = str(dt)[:10]
-            symbol = getattr(t, 'instrument_id', '')
-            buys.setdefault(day, []).append(symbol)
-
-    if not buys:
-        print('\n  [提示] 无买入记录')
-        return
-
-    print('\n' + '=' * 70)
-    print('  调仓记录（月度买入）')
-    print('=' * 70)
-    for day in sorted(buys.keys()):
-        symbols = sorted(set(buys[day]))
-        print(f'  {day}: 买入 {len(symbols)} 只 -> {" ".join(symbols)}')
-    print(f'  （共 {len(buys)} 次调仓）')
 
 
 def main():
+    parser = argparse.ArgumentParser(description='小市值策略回测（优化报告条件）')
+    parser.add_argument('--sector', default='中证1000', help='股票池（中证1000/中证全指/中证500等）')
+    parser.add_argument('--start', default='2020-04-28')
+    parser.add_argument('--end', default='2026-04-28')
+    parser.add_argument('--max-volatility', type=float, default=0.04, help='日波动率上限，None关闭')
+    parser.add_argument('--stop-loss', type=float, default=0.08, help='止损阈值，None关闭')
+    parser.add_argument('--label', default='opt11', help='输出label')
+    args = parser.parse_args()
+
     strategy_name = 'small_cap'
     strategy_class = get_strategy(strategy_name)
     default_kwargs = get_strategy_default_kwargs(strategy_name)
@@ -105,16 +74,23 @@ def main():
 
     config = dict(backtest_config)
     config['period'] = '1d'
-    config['start_date'] = START_DATE
-    config['end_date'] = END_DATE
-    benchmark = IndexConstituentManager.SECTOR_TO_INDEX.get(SECTOR, '000300.SH')
+    config['start_date'] = args.start
+    config['end_date'] = args.end
+    benchmark = IndexConstituentManager.SECTOR_TO_INDEX.get(args.sector, '000300.SH')
     config.setdefault('benchmark', benchmark)
 
+    merged_kwargs = dict(default_kwargs)
+    if args.max_volatility is not None:
+        merged_kwargs['max_volatility'] = args.max_volatility
+    if args.stop_loss is not None:
+        merged_kwargs['stop_loss_pct'] = args.stop_loss
+
     print('=' * 60)
-    print('  小市值策略（small_cap）回测 - 中证全指历史成分股')
-    print(f'  回测区间: {START_DATE} ~ {END_DATE}')
-    print(f'  股票池: {SECTOR} ({benchmark}) 历史成分股')
-    print(f'  初始资金: {config.get("cash")}')
+    print('  小市值策略回测（优化报告条件）')
+    print(f'  回测区间: {args.start} ~ {args.end}')
+    print(f'  股票池:   {args.sector} ({benchmark})')
+    print(f'  风控参数: max_volatility={merged_kwargs.get("max_volatility")}, '
+          f'stop_loss_pct={merged_kwargs.get("stop_loss_pct")}')
     print('=' * 60)
     sys.stdout.flush()
 
@@ -122,16 +98,13 @@ def main():
     api.set_ai_mode(True)
     api.set_no_record(True)
     api.configure(**config)
-
-    print('  [debug] 加载财务数据...')
+    print('  [debug] 加载财务数据(Balance+Pershareindex)...')
     sys.stdout.flush()
-    # 小市值策略仅依赖 Balance.total_equity 与 Pershareindex.s_fa_bps 两张表，
-    # 只加载这两张表可避免10年区间触发海量无关财务数据下载
-    api.load_financial_data(sector=SECTOR, table_list=['Balance', 'Pershareindex'])
+    api.load_financial_data(sector=args.sector, table_list=['Balance', 'Pershareindex'])
     print('  [debug] 财务数据加载完成')
     sys.stdout.flush()
 
-    api.add_stock_selection_strategy(strategy_class, **default_kwargs)
+    api.add_stock_selection_strategy(strategy_class, **merged_kwargs)
     print('  [debug] 策略添加完成，开始回测')
     sys.stdout.flush()
 
@@ -146,9 +119,11 @@ def main():
         acc = result.account
         metrics = {
             'strategy': strategy_name,
-            'constituent_source': '中证全指历史成分股CSV',
-            'start_date': START_DATE,
-            'end_date': END_DATE,
+            'sector': args.sector,
+            'start_date': args.start,
+            'end_date': args.end,
+            'max_volatility': merged_kwargs.get('max_volatility'),
+            'stop_loss_pct': merged_kwargs.get('stop_loss_pct'),
             'initial_capital': acc.initial_capital,
             'final_value': acc.dynamic_rights,
             'total_return_pct': acc.rate * 100,
@@ -163,7 +138,7 @@ def main():
             metrics['trading_days'] = days
 
         print('\n' + '=' * 60)
-        print('  回测结果（中证全指历史成分股）')
+        print('  回测结果')
         print('=' * 60)
         print(f'  初始资金:   {metrics["initial_capital"]:,.2f}')
         print(f'  最终资金:   {metrics["final_value"]:,.2f}')
@@ -175,10 +150,14 @@ def main():
             print(f'  交易日数:   {metrics["trading_days"]}')
         print(json.dumps(metrics, ensure_ascii=False, indent=2))
 
-        # 每年度策略表现明细
         print_annual_breakdown(result)
-        # 调仓记录（月度持仓明细）
-        print_rebalance_log(result)
+
+        out = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'reports',
+                           f'small_cap_{args.label}.json')
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, 'w', encoding='utf-8') as f:
+            json.dump(metrics, f, ensure_ascii=False, indent=2)
+        print(f'\n  结果已保存: {out}')
     else:
         print('回测无结果')
     sys.stdout.flush()

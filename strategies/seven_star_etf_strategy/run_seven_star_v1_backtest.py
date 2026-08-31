@@ -1,21 +1,17 @@
 # -*- coding: utf-8 -*-
-"""聚宽七星5.0 收益差异归因复现
+"""七星高照 - 聚宽原版参数2年回测对比
 
-逐步隔离变量，定位「2年7.7倍」与我们结果的差距来源:
-  A. 聚宽全复刻: 1只/24天/线性权重/R²普通均值/滑点万1
-  B. 仅滑点差异: 同上但滑点千1
-  C. 仅权重差异: 1只/24天/指数衰减/R²普通均值/滑点千1
-  D. 仅R²差异:   1只/24天/线性权重/R²加权均值/滑点千1
-  E. 全改进版:   1只/24天/指数衰减/R²加权均值/滑点千1
-回测窗口: 2024-01-01 ~ 2025-12-31
+覆盖参数: holdings_num=1 (单只满仓), lookback_days=24, slippage=0.001
+回测窗口: 2024-01-01 ~ 2025-12-31 (最近2年)
 """
-import os
 import sys
+import os
 import json
 import pickle
+import datetime
 
 os.environ['QMT_LOG_LEVEL'] = 'WARNING'
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 import numpy as np
 import pandas as pd
@@ -25,7 +21,7 @@ from strategies.seven_star_etf_strategy.seven_star_etf_strategy import SevenStar
 
 TRADE_START = '2024-01-01'
 TRADE_END = '2025-12-31'
-LOOKBACK = 150
+LOOKBACK = 150  # 数据前移天数
 
 
 def load_data():
@@ -35,12 +31,12 @@ def load_data():
         return pickle.load(f)
 
 
-def run_one(data_dict, label, slippage, weight_mode, r2_wmean):
+def run_one(data_dict, holdings, lookback, label):
     api = BacktestAPI(data_source='open')
     api.configure(
         cash=1000000, commission=0.0002,
         open_commission=0.0002, close_commission=0.0002,
-        close_tax=0.0, min_commission=5.0, slippage=slippage,
+        close_tax=0.0, min_commission=5.0, slippage=0.001,
         start_date=TRADE_START, end_date=TRADE_END,
         data_lookback_days=LOOKBACK, period='1d', benchmark='000300.SH',
     )
@@ -54,9 +50,7 @@ def run_one(data_dict, label, slippage, weight_mode, r2_wmean):
         api._symbols.append(symbol)
         api._data_cache[symbol] = ohlcv
 
-    api.add_strategy(SevenStarETFRotationStrategy,
-                     holdings_num=1, lookback_days=24,
-                     weight_mode=weight_mode, r2_use_weighted_mean=r2_wmean)
+    api.add_strategy(SevenStarETFRotationStrategy, holdings_num=holdings, lookback_days=lookback)
     result = api.run()
 
     equity_history = result.equity_history
@@ -80,59 +74,63 @@ def run_one(data_dict, label, slippage, weight_mode, r2_wmean):
 
     sell_trades = [t for t in trade_records if t.get('direction') == 'sell']
     win_trades = [t for t in sell_trades if t.get('pnl', 0) > 0]
+    loss_trades = [t for t in sell_trades if t.get('pnl', 0) <= 0]
     win_rate = len(win_trades) / max(len(sell_trades), 1)
 
     m = {
         'label': label,
-        'slippage': slippage,
-        'weight_mode': weight_mode,
-        'r2_wmean': r2_wmean,
+        'holdings_num': holdings,
+        'lookback_days': lookback,
+        'final_value': round(final_value, 2),
         'total_return': round(total_return, 4),
         'annual_return': round(annual_return, 4),
         'sharpe': round(sharpe, 3),
         'max_drawdown': round(max_drawdown, 4),
+        'calmar': round(annual_return / abs(max_drawdown), 3) if max_drawdown != 0 else 0,
         'trades': len(sell_trades),
         'win_rate': round(win_rate, 4),
     }
     print(f"[{label}] 总收益: {m['total_return']:.2%} | 年化: {m['annual_return']:.2%} | "
-          f"夏普: {m['sharpe']:.2f} | 回撤: {m['max_drawdown']:.2%} | 交易: {m['trades']}", flush=True)
-    return m
+          f"夏普: {m['sharpe']:.2f} | 回撤: {m['max_drawdown']:.2%} | "
+          f"胜率: {m['win_rate']:.2%} | 交易: {m['trades']}", flush=True)
+    return api, result, m
 
 
 def main():
     data_dict = load_data()
     print(f'数据加载完成: {len(data_dict)} 只ETF', flush=True)
 
-    runs = [
-        ('A聚宽全复刻(万1/线性/普通R²)', 0.0001, 'linear', False),
-        ('B滑点千1(线性/普通R²)',       0.001,  'linear', False),
-        ('C指数衰减(千1/普通R²)',       0.001,  'exp_decay', False),
-        ('D加权R²(千1/线性)',           0.001,  'linear', True),
-        ('E全改进(千1/指数/加权R²)',    0.001,  'exp_decay', True),
-        ('F万1+线性+加权R²',            0.0001, 'linear', True),
-    ]
-
     results = []
-    for label, slip, wm, r2 in runs:
-        try:
-            m = run_one(data_dict, label, slip, wm, r2)
-            results.append(m)
-        except Exception as e:
-            print(f'[{label}] FAIL: {e}', flush=True)
 
-    print('\n' + '=' * 110)
-    print('聚宽5.0 复现归因 (2024-01-01~2025-12-31, 1只/24天)')
-    print('=' * 110)
-    header = f"{'配置':>30} | {'滑点':>6} | {'权重':>9} | {'R²':>7} | {'总收益':>8} | {'年化':>8} | {'夏普':>6} | {'回撤':>8} | {'交易':>5}"
+    # 1. 聚宽原版参数: 1只/24天
+    _, _, m1 = run_one(data_dict, 1, 24, '聚宽原版参数(1只/24天)')
+    results.append(m1)
+
+    # 2. 当前优化版参数: 5只/60天 (对照)
+    _, _, m2 = run_one(data_dict, 5, 60, '优化版参数(5只/60天)')
+    results.append(m2)
+
+    # 3. 单只/60天 (隔离持仓数影响)
+    _, _, m3 = run_one(data_dict, 1, 60, '单只/60天')
+    results.append(m3)
+
+    # 4. 5只/24天 (隔离周期影响)
+    _, _, m4 = run_one(data_dict, 5, 24, '5只/24天')
+    results.append(m4)
+
+    print('\n' + '=' * 100)
+    print('2年回测对比 (2024-01-01 ~ 2025-12-31, 滑点千1)')
+    print('=' * 100)
+    header = f"{'配置':>22} | {'总收益':>8} | {'年化':>8} | {'夏普':>6} | {'回撤':>8} | {'卡尔马':>7} | {'交易':>5} | {'胜率':>7}"
     print(header)
-    print('-' * 110)
+    print('-' * 100)
     for m in results:
-        print(f"{m['label']:>30} | {m['slippage']:>6} | {m['weight_mode']:>9} | "
-              f"{'加权' if m['r2_wmean'] else '普通':>7} | {m['total_return']:>7.2%} | "
-              f"{m['annual_return']:>7.2%} | {m['sharpe']:>6.2f} | "
-              f"{m['max_drawdown']:>7.2%} | {m['trades']:>5}")
+        print(f"{m['label']:>22} | {m['total_return']:>7.2%} | {m['annual_return']:>7.2%} | "
+              f"{m['sharpe']:>6.2f} | {m['max_drawdown']:>7.2%} | {m['calmar']:>7.2f} | "
+              f"{m['trades']:>5} | {m['win_rate']:>6.2%}")
 
-    out_path = os.path.join('reports', 'seven_star_reproduce.json')
+    out_path = os.path.join('reports', 'seven_star_v1_vs_opt.json')
+    os.makedirs('reports', exist_ok=True)
     with open(out_path, 'w', encoding='utf-8') as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
     print(f'\n结果已保存: {out_path}')
