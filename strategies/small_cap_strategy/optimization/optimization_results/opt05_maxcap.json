@@ -1,0 +1,13 @@
+{
+  "initial_capital": 1000000,
+  "final_value": 40185689.71216774,
+  "total_return_pct": 3918.5689712167737,
+  "sharpe_ratio": 1.3657834252116683,
+  "max_drawdown_pct": -52.52715911630169,
+  "annual_return_pct": 41.634493877321724,
+  "trading_days": 2674,
+  "label": "opt05_maxcap",
+  "extra_params": {
+    "max_market_cap": 30
+  }
+}

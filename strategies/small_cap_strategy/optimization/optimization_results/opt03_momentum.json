@@ -1,0 +1,13 @@
+{
+  "initial_capital": 1000000,
+  "final_value": 12279226.203619702,
+  "total_return_pct": 1127.9226203619703,
+  "sharpe_ratio": 1.0117584256875294,
+  "max_drawdown_pct": -58.785969373069015,
+  "annual_return_pct": 26.661430158526066,
+  "trading_days": 2674,
+  "label": "opt03_momentum",
+  "extra_params": {
+    "min_momentum": 0.0
+  }
+}

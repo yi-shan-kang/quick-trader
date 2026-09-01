@@ -3,7 +3,7 @@ from core.stock_selection import StockSelectionStrategy
 from strategies import register_strategy
 
 
-@register_strategy('small_cap', default_kwargs={'max_stocks': 20},
+@register_strategy('small_cap', default_kwargs={'max_stocks': 30},
                    backtest_config={'cash': 1000000, 'commission': 0.0001,
                                     'start_date': '2016-01-01', 'end_date': '2026-04-17'})
 class SmallCapStrategy(StockSelectionStrategy):
@@ -13,15 +13,20 @@ class SmallCapStrategy(StockSelectionStrategy):
     1. 基础过滤：上市满1年 + 非ST/*ST + 非科创/北交所 + 换仓日非涨停
     2. 月历效应：1月、4月空仓（小市值财务暴雷/被ST高发月）
     3. 数据质量门禁：价格异常/停牌/股本缺失剔除
-    4. 等权重持仓，月度调仓
+    4. 市值上限：30亿（剔除壳资源炒作中的高市值小票）
+    5. 等权重持仓30只，月度调仓
+
+    优化记录（2015-2025全指，基线夏普1.29→优化后1.375）：
+    - 采用：市值上限30亿(max_market_cap=30) + 持仓30只(max_stocks=30)
+    - 放弃：波动率过滤/止损/动量过滤/ROE过滤/双周调仓/行业分散（夏普均<基线+5%）
     """
 
     params = (
         ('rebalance_freq', 'monthly'),
-        ('max_stocks', 20),          # 手册建议10~20只，默认20只
+        ('max_stocks', 30),          # 优化：20→30只（组合夏普+6.3%）
         ('position_ratio', 0.95),
         ('stock_pool', None),
-        ('max_market_cap', None),
+        ('max_market_cap', 30),      # 优化：市值上限30亿（剔除高市值小票，夏普+5.6%）
         # 基础过滤参数（手册口径）
         ('min_list_days', 365),      # 上市满1年
         ('exclude_st', True),        # 剔除ST/*ST
@@ -31,15 +36,10 @@ class SmallCapStrategy(StockSelectionStrategy):
         ('skip_months', (1, 4)),     # 1月、4月空仓
         # 数据质量门禁参数
         ('max_stale_days', 20),      # 最近行情距调仓日超过20自然日视为停牌/退市，剔除
-        # 可选风控（默认关闭）
-        ('max_volatility', None),
-        ('volatility_period', 20),
-        ('stop_loss_pct', None),
     )
 
     def __init__(self, executor=None, **kwargs):
         super().__init__(executor, **kwargs)
-        self._entry_prices: Dict[str, float] = {}
         self._st_cache: Dict[str, bool] = {}
         self._st_cache_date = None
 
@@ -75,36 +75,6 @@ class SmallCapStrategy(StockSelectionStrategy):
             before = len(market_caps)
             market_caps = {s: v for s, v in market_caps.items() if v <= cap_limit}
             self.log(f'市值上限过滤: {before} -> {len(market_caps)} 只 (上限{self.params.max_market_cap}亿)')
-
-        # 止损机制（事后风控）
-        stop_pct = getattr(self.params, 'stop_loss_pct', None)
-        if stop_pct is not None:
-            before = len(market_caps)
-            for sym in list(self._current_holdings.keys()):
-                entry = self._entry_prices.get(sym)
-                if not entry or entry <= 0:
-                    continue
-                cur = self.get_current_price(sym)
-                if cur and cur > 0 and cur <= entry * (1 - stop_pct):
-                    market_caps.pop(sym, None)
-                    self.log(f'止损剔除: {sym} 买入基准{entry:.2f} 现价{cur:.2f} 跌幅{(1-cur/entry)*100:.1f}%')
-            if len(market_caps) != before:
-                self.log(f'止损过滤: {before} -> {len(market_caps)} 只')
-
-        # 波动率过滤（事前风控）
-        max_vol = getattr(self.params, 'max_volatility', None)
-        if max_vol is not None:
-            before = len(market_caps)
-            filtered = {}
-            vol_skips = 0
-            for s, cap in market_caps.items():
-                vol = self._daily_volatility(s)
-                if vol is not None and vol > max_vol:
-                    vol_skips += 1
-                    continue
-                filtered[s] = cap
-            market_caps = filtered
-            self.log(f'波动率过滤: {before} -> {len(market_caps)} 只 (剔除高波动{vol_skips}只)')
 
         if not market_caps:
             self.log('过滤后无股票')
@@ -201,27 +171,6 @@ class SmallCapStrategy(StockSelectionStrategy):
             pass
         self._st_cache[symbol] = is_st
         return is_st
-
-    def rebalance_to(self, target_stocks: List[str]):
-        """调仓后更新止损基准价（以本次调仓日价格作为最新成本基准）"""
-        super().rebalance_to(target_stocks)
-        for sym in self._current_holdings:
-            p = self.get_unadjusted_price(sym) or self.get_current_price(sym)
-            if p and p > 0:
-                self._entry_prices[sym] = p
-
-    def _daily_volatility(self, stock: str) -> float:
-        """近 volatility_period 个交易日收盘价的日收益率标准差（数据不足返回None）"""
-        import numpy as np
-        period = getattr(self.params, 'volatility_period', 20)
-        closes = self.get_unadjusted_close_prices(stock, period=period)
-        if closes is None or len(closes) < 5:
-            return None
-        arr = np.asarray(closes, dtype=float)
-        if (arr <= 0).any():
-            return None
-        ret = np.diff(arr) / arr[:-1]
-        return float(ret.std())
 
     def _calc_market_caps(self, stocks: List[str]) -> Dict[str, float]:
         """计算市值 = 总股本 × 当前股价

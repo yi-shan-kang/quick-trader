@@ -1,0 +1,14 @@
+{
+  "initial_capital": 1000000,
+  "final_value": 2246022.4029723173,
+  "total_return_pct": 124.60224029723173,
+  "sharpe_ratio": 1.7022601478430894,
+  "max_drawdown_pct": -16.038881271273382,
+  "annual_return_pct": 52.39392807190939,
+  "trading_days": 484,
+  "label": "oos_baseline",
+  "extra_params": {
+    "max_market_cap": null,
+    "max_stocks": 20
+  }
+}

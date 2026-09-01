@@ -1,0 +1,14 @@
+{
+  "initial_capital": 1000000,
+  "final_value": 36177198.226558946,
+  "total_return_pct": 3517.7198226558944,
+  "sharpe_ratio": 1.3489918532001652,
+  "max_drawdown_pct": -51.639712472555956,
+  "annual_return_pct": 40.23880850468831,
+  "trading_days": 2674,
+  "label": "sens_stk33",
+  "extra_params": {
+    "max_market_cap": 30,
+    "max_stocks": 33
+  }
+}

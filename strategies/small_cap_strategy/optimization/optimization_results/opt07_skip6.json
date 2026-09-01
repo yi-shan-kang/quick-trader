@@ -1,0 +1,17 @@
+{
+  "initial_capital": 1000000,
+  "final_value": 25000971.605769936,
+  "total_return_pct": 2400.0971605769937,
+  "sharpe_ratio": 1.3050923997188133,
+  "max_drawdown_pct": -33.75555976984736,
+  "annual_return_pct": 35.43927741134729,
+  "trading_days": 2674,
+  "label": "opt07_skip6",
+  "extra_params": {
+    "skip_months": [
+      1,
+      4,
+      6
+    ]
+  }
+}

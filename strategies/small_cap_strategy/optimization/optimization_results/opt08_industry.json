@@ -1,0 +1,13 @@
+{
+  "initial_capital": 1000000,
+  "final_value": 25759473.572237346,
+  "total_return_pct": 2475.947357223735,
+  "sharpe_ratio": 1.018522025407087,
+  "max_drawdown_pct": -53.9533426161894,
+  "annual_return_pct": 35.82130009287834,
+  "trading_days": 2674,
+  "label": "opt08_industry",
+  "extra_params": {
+    "industry_limit": 3
+  }
+}
