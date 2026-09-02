@@ -5,6 +5,10 @@
   避免幸存者偏差（不用当前成分股）
 - 行情/财务：QMT 本地缓存（离线可读）
 - 回测区间：近 1 年（2025-04-01 ~ 2026-04-17）
+
+用法:
+    python run_small_cap_backtest_akshare.py                  # 弹出 GUI 图表 + 生成 HTML 报告
+    python run_small_cap_backtest_akshare.py --headless       # 服务器/CI，仅生成 HTML 报告
 """
 import os
 import sys
@@ -23,6 +27,7 @@ from core.data.opendata import OpenDataProcessor
 START_DATE = '2025-04-01'
 END_DATE = '2026-04-17'
 SECTOR = '中证1000'
+HEADLESS = '--headless' in sys.argv
 
 
 def main():
@@ -43,6 +48,7 @@ def main():
     print(f'  回测区间: {START_DATE} ~ {END_DATE}')
     print(f'  股票池: {SECTOR} 历史成分股 (akshare还原)')
     print(f'  初始资金: {config.get("cash")}')
+    print(f'  GUI 模式: {"关闭(--headless)" if HEADLESS else "开启（自动弹图）"}')
     print('=' * 60)
     sys.stdout.flush()
 
@@ -56,8 +62,9 @@ def main():
     sys.stdout.flush()
 
     api = BacktestAPI(data_source='open')
-    api.set_ai_mode(True)
-    api.set_no_record(True)
+    api.set_strategy_name(strategy_name)
+    if HEADLESS:
+        api.set_ai_mode(True)
     api.configure(**config)
     print('  [debug] 开始加载财务数据...')
     sys.stdout.flush()
@@ -111,9 +118,45 @@ def main():
             print(f'  交易日数:   {metrics["trading_days"]}')
 
         print(json.dumps(metrics, ensure_ascii=False, indent=2))
+        sys.stdout.flush()
+
+        # 生成 HTML 报告（基于自动记录的回测结果）
+        _generate_html_report(strategy_name)
+
+        # 弹出 GUI 图表窗口（headless 或缺少显示环境时跳过）
+        if not HEADLESS:
+            try:
+                print('\n  [提示] 正在弹出图表窗口，关闭窗口后程序结束...')
+                sys.stdout.flush()
+                api.show_report()
+            except Exception as e:
+                print(f'\n  [警告] GUI 窗口弹出失败（{type(e).__name__}: {e}）')
+                print('  请改用 main.py 查看图表，或加 --headless 仅生成 HTML 报告')
     else:
         print('回测无结果')
     sys.stdout.flush()
+
+
+def _generate_html_report(strategy_name: str):
+    """基于自动记录的结果生成 Plotly HTML 报告"""
+    try:
+        from utils.backtest_recorder import BacktestRecorder
+
+        recorder = BacktestRecorder()
+        records = recorder.list_records(strategy_name=strategy_name)
+        if not records:
+            print('  [警告] 未找到回测记录，跳过 HTML 报告生成')
+            return
+        # 取最新一次记录生成报告
+        latest = records[-1]['run_id']
+        output = recorder.generate_report([latest])
+        if output:
+            print(f'\n  [报告] HTML 报告已生成: {os.path.abspath(output)}')
+            print('  可用浏览器打开查看（净值曲线/回撤/交易统计等）')
+        else:
+            print('  [警告] HTML 报告生成失败（无有效记录）')
+    except Exception as e:
+        print(f'  [警告] HTML 报告生成异常: {type(e).__name__}: {e}')
 
 
 if __name__ == '__main__':

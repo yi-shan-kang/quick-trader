@@ -1,65 +1,82 @@
 # -*- coding: utf-8 -*-
-"""小市值策略（small_cap）回测脚本
-
-- 数据源：MiniQMT (xtquant)
-- 股票池：中证1000（000852.SH）历史成分股
-- 回测区间：2016-01-01 ~ 2026-04-17（策略默认配置）
-- 财务数据：QMT 8 张财报表（Balance/Income/CashFlow/Capital/Pershareindex 等）
+"""七星高照ETF轮动策略回测脚本
 
 用法:
-    python run_small_cap_backtest.py                      # 弹出 GUI 图表 + 生成 HTML 报告
-    python run_small_cap_backtest.py --headless           # 服务器/CI，仅打印结果 + 生成 HTML 报告
+    python run_qixing_gaozhao_backtest.py [start_date] [end_date] [--headless]
+
+示例:
+    python run_qixing_gaozhao_backtest.py 2020-04-28 2026-04-28        # 弹出 GUI 图表 + 生成 HTML 报告
+    python run_qixing_gaozhao_backtest.py 2020-04-28 2026-04-28 --headless  # 无 GUI（服务器/CI），仅生成 HTML 报告
+
+说明:
+- 默认回测结束后自动弹出 PyQt5 图表窗口（7 个标签页），关闭窗口后程序退出
+- 无论是否弹出 GUI，回测结果都会自动记录到 backtest_results/ 并生成 Plotly HTML 报告
+  （输出位置: backtest_results/comparison/<日期>_qixing_gaozhao_report.html）
 """
 import os
 import sys
 import json
+import argparse
 import traceback
 
 os.environ['QMT_LOG_LEVEL'] = 'WARNING'
-# 项目根目录加入路径（脚本位于 strategies/small_cap_strategy/ 下）
+# 项目根目录加入路径（脚本位于 strategies/qixing_gaozhao_etf_strategy/ 下）
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from api.backtest_api import BacktestAPI
 from strategies import get_strategy, get_strategy_default_kwargs, get_strategy_backtest_config
-from core.data.index_constituent import IndexConstituentManager
 
-# --headless 表示无 GUI 环境（不影响既有参数）
-HEADLESS = '--headless' in sys.argv
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='七星高照ETF轮动策略回测')
+    parser.add_argument('dates', nargs='*', help='回测区间 [start_date] [end_date]')
+    parser.add_argument('--headless', action='store_true',
+                        help='无 GUI 模式（服务器/CI 环境），仅打印结果与生成 HTML 报告')
+    return parser.parse_args()
 
 
 def main():
-    strategy_name = 'small_cap'
+    args = parse_args()
+    strategy_name = 'qixing_gaozhao'
+
+    if len(args.dates) >= 2:
+        start_date, end_date = args.dates[0], args.dates[1]
+    else:
+        start_date, end_date = '2020-04-28', '2026-04-28'
+
     strategy_class = get_strategy(strategy_name)
     default_kwargs = get_strategy_default_kwargs(strategy_name)
     backtest_config = get_strategy_backtest_config(strategy_name)
 
     config = dict(backtest_config)
     config['period'] = '1d'
-    benchmark = IndexConstituentManager.SECTOR_TO_INDEX.get('中证1000', '000300.SH')
-    config.setdefault('benchmark', benchmark)
+    config['start_date'] = start_date
+    config['end_date'] = end_date
 
     print('=' * 60)
-    print('  小市值策略（small_cap）回测')
-    print(f'  回测区间: {config.get("start_date")} ~ {config.get("end_date")}')
-    print(f'  股票池: 中证1000 ({benchmark})')
+    print('  七星高照ETF轮动策略（优化版）回测')
+    print(f'  回测区间: {start_date} ~ {end_date}')
     print(f'  初始资金: {config.get("cash")}')
-    print(f'  GUI 模式: {"关闭(--headless)" if HEADLESS else "开启（自动弹图）"}')
+    print(f'  GUI 模式: {"关闭(--headless)" if args.headless else "开启（自动弹图）"}')
     print('=' * 60)
     sys.stdout.flush()
 
     api = BacktestAPI()
+    # 设置策略名（决定回测记录的命名空间，main.py 同样调用）
     api.set_strategy_name(strategy_name)
-    if HEADLESS:
+    # 默认允许记录回测结果（生成 HTML 报告依赖记录数据）
+    api.set_no_record(False)
+    # 仅 headless 模式开启 ai_mode（跳过 GUI 渲染）
+    if args.headless:
         api.set_ai_mode(True)
     api.configure(**config)
+    api.add_strategy(strategy_class, **default_kwargs)
 
-    # 下载/加载中证1000历史成分股的财务数据
-    api.load_financial_data(sector='中证1000')
-
-    # 添加选股策略（内部会加载股票池行情数据）
-    api.add_stock_selection_strategy(strategy_class, **default_kwargs)
-
+    print('  [debug] 开始回测...')
+    sys.stdout.flush()
     api.run()
+    print('  [debug] 回测完成')
+    sys.stdout.flush()
 
     result = api.get_result()
     if result:
@@ -68,6 +85,8 @@ def main():
         acc = result.account
         metrics = {
             'strategy': strategy_name,
+            'start_date': start_date,
+            'end_date': end_date,
             'initial_capital': acc.initial_capital,
             'final_value': acc.dynamic_rights,
             'total_return_pct': acc.rate * 100,
@@ -92,19 +111,14 @@ def main():
         print(f'  最大回撤:   {metrics["max_drawdown_pct"]:.2f}%')
         if 'trading_days' in metrics:
             print(f'  交易日数:   {metrics["trading_days"]}')
-
-        out_file = os.path.join('reports', 'small_cap_backtest.json')
-        os.makedirs('reports', exist_ok=True)
-        with open(out_file, 'w', encoding='utf-8') as f:
-            json.dump(metrics, f, indent=2, ensure_ascii=False)
-        print(f'\n结果已保存: {out_file}')
+        print(json.dumps(metrics, ensure_ascii=False, indent=2))
         sys.stdout.flush()
 
         # 生成 HTML 报告（基于自动记录的回测结果）
-        _generate_html_report(strategy_name)
+        _generate_html_report(strategy_name, metrics)
 
         # 弹出 GUI 图表窗口（headless 或缺少显示环境时跳过）
-        if not HEADLESS:
+        if not args.headless:
             try:
                 print('\n  [提示] 正在弹出图表窗口，关闭窗口后程序结束...')
                 sys.stdout.flush()
@@ -117,7 +131,7 @@ def main():
     sys.stdout.flush()
 
 
-def _generate_html_report(strategy_name: str):
+def _generate_html_report(strategy_name: str, metrics: dict):
     """基于自动记录的结果生成 Plotly HTML 报告"""
     try:
         from utils.backtest_recorder import BacktestRecorder

@@ -11,6 +11,7 @@
     python run_small_cap_backtest_opt.py                     # 报告默认条件（中证1000 + 波动率+止损）
     python run_small_cap_backtest_opt.py --sector 中证全指   # 全指历史成分股对照
     python run_small_cap_backtest_opt.py --no-vol --no-stop  # 关闭两项风控（纯基线）
+    python run_small_cap_backtest_opt.py --headless          # 无 GUI（服务器/CI），仅生成 HTML 报告
 """
 import argparse
 import json
@@ -65,6 +66,7 @@ def main():
     parser.add_argument('--max-volatility', type=float, default=0.04, help='日波动率上限，None关闭')
     parser.add_argument('--stop-loss', type=float, default=0.08, help='止损阈值，None关闭')
     parser.add_argument('--label', default='opt11', help='输出label')
+    parser.add_argument('--headless', action='store_true', help='无 GUI（服务器/CI），仅生成 HTML 报告')
     args = parser.parse_args()
 
     strategy_name = 'small_cap'
@@ -91,12 +93,14 @@ def main():
     print(f'  股票池:   {args.sector} ({benchmark})')
     print(f'  风控参数: max_volatility={merged_kwargs.get("max_volatility")}, '
           f'stop_loss_pct={merged_kwargs.get("stop_loss_pct")}')
+    print(f'  GUI 模式: {"关闭(--headless)" if args.headless else "开启（自动弹图）"}')
     print('=' * 60)
     sys.stdout.flush()
 
     api = BacktestAPI()
-    api.set_ai_mode(True)
-    api.set_no_record(True)
+    api.set_strategy_name(strategy_name)
+    if args.headless:
+        api.set_ai_mode(True)
     api.configure(**config)
     print('  [debug] 加载财务数据(Balance+Pershareindex)...')
     sys.stdout.flush()
@@ -158,9 +162,45 @@ def main():
         with open(out, 'w', encoding='utf-8') as f:
             json.dump(metrics, f, ensure_ascii=False, indent=2)
         print(f'\n  结果已保存: {out}')
+        sys.stdout.flush()
+
+        # 生成 HTML 报告（基于自动记录的回测结果）
+        _generate_html_report(strategy_name)
+
+        # 弹出 GUI 图表窗口（headless 或缺少显示环境时跳过）
+        if not args.headless:
+            try:
+                print('\n  [提示] 正在弹出图表窗口，关闭窗口后程序结束...')
+                sys.stdout.flush()
+                api.show_report()
+            except Exception as e:
+                print(f'\n  [警告] GUI 窗口弹出失败（{type(e).__name__}: {e}）')
+                print('  请改用 main.py 查看图表，或加 --headless 仅生成 HTML 报告')
     else:
         print('回测无结果')
     sys.stdout.flush()
+
+
+def _generate_html_report(strategy_name: str):
+    """基于自动记录的结果生成 Plotly HTML 报告"""
+    try:
+        from utils.backtest_recorder import BacktestRecorder
+
+        recorder = BacktestRecorder()
+        records = recorder.list_records(strategy_name=strategy_name)
+        if not records:
+            print('  [警告] 未找到回测记录，跳过 HTML 报告生成')
+            return
+        # 取最新一次记录生成报告
+        latest = records[-1]['run_id']
+        output = recorder.generate_report([latest])
+        if output:
+            print(f'\n  [报告] HTML 报告已生成: {os.path.abspath(output)}')
+            print('  可用浏览器打开查看（净值曲线/回撤/交易统计等）')
+        else:
+            print('  [警告] HTML 报告生成失败（无有效记录）')
+    except Exception as e:
+        print(f'  [警告] HTML 报告生成异常: {type(e).__name__}: {e}')
 
 
 if __name__ == '__main__':
