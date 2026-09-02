@@ -25,6 +25,9 @@ LOG/
 # 回测报告输出目录（可重新生成，不上传仓库）
 /reports/
 
+# 研究/草稿目录（不上传仓库）
+/research/
+
 *.txt
 !requirements.txt
 
