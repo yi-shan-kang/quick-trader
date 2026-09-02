@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>三层阁策略回测报告</title>
+<style>
+body { font-family: "Microsoft YaHei", sans-serif; margin: 0; padding: 20px; background: #f8f6f1; color: #2c2c2c; }
+.container { max-width: 1000px; margin: 0 auto; }
+h1 { text-align: center; color: #1a3a5c; border-bottom: 3px solid #c8862a; padding-bottom: 15px; }
+h2 { color: #1a3a5c; border-left: 4px solid #c8862a; padding-left: 12px; margin-top: 35px; }
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 20px 0; }
+.stat { background: white; padding: 18px; border-radius: 8px; text-align: center; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+.stat .val { font-size: 1.6em; font-weight: 700; color: #1a3a5c; }
+.stat .lbl { font-size: 0.85em; color: #666; margin-top: 4px; }
+img { width: 100%; border-radius: 8px; margin: 15px 0; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+table { width: 100%; border-collapse: collapse; margin: 15px 0; background: white; border-radius: 8px; overflow: hidden; }
+th { background: #1a3a5c; color: white; padding: 10px; text-align: left; }
+td { padding: 8px 10px; border-bottom: 1px solid #eee; }
+tr:nth-child(even) { background: #f9f7f2; }
+.summary { background: white; padding: 25px; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); margin: 20px 0; }
+</style>
+</head>
+<body>
+<div class="container">
+<h1>三层阁策略回测报告</h1>
+<p style="text-align:center; color:#666;">
+回测区间: 2016-01-08 ~ 2026-06-30
+</p>
+
+<h2>核心绩效指标</h2>
+<div class="stats">
+<div class="stat"><div class="val">199.8%</div><div class="lbl">累计收益</div></div>
+<div class="stat"><div class="val">47.3%</div><div class="lbl">基准收益(沪深300)</div></div>
+<div class="stat"><div class="val" style="color:#c0392b;">+152.5%</div><div class="lbl">超额收益</div></div>
+<div class="stat"><div class="val">11.0%</div><div class="lbl">年化收益</div></div>
+<div class="stat"><div class="val" style="color:#c0392b;">-23.4%</div><div class="lbl">最大回撤</div></div>
+<div class="stat"><div class="val">0.98</div><div class="lbl">夏普比率</div></div>
+<div class="stat"><div class="val">11.5%</div><div class="lbl">年化波动</div></div>
+<div class="stat"><div class="val">1157</div><div class="lbl">交易次数</div></div>
+<div class="stat"><div class="val">536周</div><div class="lbl">回测周期</div></div>
+</div>
+
+<h2>净值曲线</h2>
+<img src="nav_curve.png" alt="净值曲线">
+
+<h2>四桶配置变化</h2>
+<img src="bucket_allocation.png" alt="配置变化">
+
+<h2>回撤分析</h2>
+<img src="drawdown.png" alt="回撤曲线">
+
+<h2>月度收益热力图</h2>
+<img src="monthly_returns.png" alt="月度收益">
+
+<h2>各桶收益贡献</h2>
+<table>
+<tr><th>配置桶</th><th>基准比例</th><th>期间收益</th></tr>
+<tr><td>A股权益</td><td>35%</td><td>213.6%</td></tr><tr><td>海外权益</td><td>35%</td><td>190.0%</td></tr><tr><td>债券收益</td><td>15%</td><td>178.1%</td></tr><tr><td>黄金</td><td>15%</td><td>199.6%</td></tr>
+</table>
+
+<h2>交易记录统计</h2>
+<table>
+<tr><th>操作</th><th>次数</th><th>平均金额</th></tr>
+<tr><td>买入</td><td>566</td><td>9,008元</td></tr><tr><td>卖出</td><td>591</td><td>6,973元</td></tr></table>
+<h2>最近10笔交易</h2>
+<table>
+<tr><th>日期</th><th>操作</th><th>代码</th><th>名称</th><th>桶</th><th>金额</th><th>原因</th></tr>
+<tr><td>2026-06-18</td><td>卖出</td><td>506003</td><td>富国科创</td><td>A_stock</td><td>-2,716</td><td>桶间再平衡：A_stock超配2.3%</td></tr><tr><td>2026-06-18</td><td>卖出</td><td>506006</td><td>添富科创</td><td>A_stock</td><td>-2,716</td><td>桶间再平衡：A_stock超配2.3%</td></tr><tr><td>2026-06-18</td><td>卖出</td><td>506000</td><td>科创板基</td><td>A_stock</td><td>-2,716</td><td>桶间再平衡：A_stock超配2.3%</td></tr><tr><td>2026-06-18</td><td>卖出</td><td>160325</td><td>华夏创业</td><td>A_stock</td><td>-2,716</td><td>桶间再平衡：A_stock超配2.3%</td></tr><tr><td>2026-06-18</td><td>卖出</td><td>161914</td><td>万家创业</td><td>A_stock</td><td>-2,716</td><td>桶间再平衡：A_stock超配2.3%</td></tr><tr><td>2026-06-18</td><td>卖出</td><td>160529</td><td>创业博时</td><td>A_stock</td><td>-2,716</td><td>桶间再平衡：A_stock超配2.3%</td></tr><tr><td>2026-06-18</td><td>卖出</td><td>162720</td><td>广发创业</td><td>A_stock</td><td>-2,716</td><td>桶间再平衡：A_stock超配2.3%</td></tr><tr><td>2026-06-18</td><td>卖出</td><td>506008</td><td>科创长城</td><td>A_stock</td><td>-2,716</td><td>桶间再平衡：A_stock超配2.3%</td></tr><tr><td>2026-06-30</td><td>买入</td><td>161116</td><td>易基黄金</td><td>gold</td><td>31,306</td><td>桶间再平衡：gold低配-2.1%</td></tr><tr><td>2026-06-30</td><td>买入</td><td>518850</td><td>黄金ETF</td><td>gold</td><td>31,306</td><td>桶间再平衡：gold低配-2.1%</td></tr></table>
+<div class="summary">
+<h2 style="border:none; padding:0;">策略说明</h2>
+<p><strong>核心方法论：</strong></p>
+<ul>
+<li><strong>四桶配置</strong>：A股35% + 美股35% + 债券15% + 黄金15%</li>
+<li><strong>2%动态再平衡</strong>：偏离基准超2%触发高抛低吸</li>
+<li><strong>封基选基</strong>：4周净增+年化折价排名买入，10周恶化卖出</li>
+<li><strong>永远满仓</strong>：不择时，不空仓</li>
+<li><strong>弃弱留强</strong>：不追求选最优，只求不持有最差</li>
+</ul>
+<p style="color:#999; font-size:0.85em; margin-top:15px;">本报告由三层阁策略回测系统自动生成，仅供学习研究参考，不构成投资建议。</p>
+</div>
+
+</div>
+</body>
+</html>
