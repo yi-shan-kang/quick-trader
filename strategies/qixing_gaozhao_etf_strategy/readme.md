@@ -102,6 +102,9 @@ R²             = 加权判定系数（衡量趋势稳定性）
 
 # 指定区间
 .venv\Scripts\python.exe strategies\qixing_gaozhao_etf_strategy\run_qixing_gaozhao_backtest.py 2016-01-01 2025-12-31
+
+# 无 GUI（服务器/CI），仅生成 HTML 报告
+.venv\Scripts\python.exe strategies\qixing_gaozhao_etf_strategy\run_qixing_gaozhao_backtest.py 2020-04-28 2025-12-31 --headless
 ```
 
 也可通过主程序运行：
@@ -132,19 +135,8 @@ qixing_gaozhao_etf_strategy/
 ├── config.py                      # ETF 池 / QDII 集合 / 防御ETF 定义
 ├── run_qixing_gaozhao_backtest.py # 回测运行脚本
 ├── readme.md                      # 本文档
-├── 部署指南.md                    # 实盘部署指南（模拟/实盘交易）
-└── 聚宽策略源代码.py              # 原始聚宽代码（对照参考）
+└── optimization/                  # 优化记录（后续扩展）
 ```
-
-## 相关文档
-
-| 文档 | 内容 |
-|------|------|
-| [部署指南.md](部署指南.md) | 模拟盘 → 实盘部署全流程、监控运维、参数调优、风险提示 |
-| [聚宽策略源代码.py](聚宽策略源代码.py) | 原始聚宽代码（优化版），对照参考 |
-| [config.py](config.py) | ETF 池 / QDII 集合 / 防御 ETF 完整定义 |
-| [策略开发文档](../../docs/strategy-development.md) | 框架级策略开发规范 |
-| [框架使用文档](../../docs/usage.md) | 回测 / 模拟 / 实盘 / 多实例运行方式 |
 
 ## 注意事项与限制
 

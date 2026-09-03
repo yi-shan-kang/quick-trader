@@ -51,7 +51,7 @@ class QixingGaozhaoStrategy(StrategyLogic):
         ('lookback_days', 60),           # 动量计算周期（优化版：24→60）
         ('defensive_etf', DEFENSIVE_ETF),  # 防御性ETF（货币ETF）
         # 流动性过滤
-        ('liquidity_min_amount', 1e8),   # 日均成交额阈值（元），QMT volume单位股，成交额≈close*volume
+        ('liquidity_min_amount', 1e8),   # 日均成交额阈值（元），QMT volume 归一化为「手」，成交额≈close×volume×100
         ('liquidity_lookback', 20),      # 流动性检查回看天数
         # 风控
         ('stop_loss', 0.92),             # 固定止损线（下跌8%触发）
