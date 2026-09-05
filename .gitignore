@@ -73,3 +73,6 @@ test_*.py
 xiaohongshu
 
 trading_records
+
+# 永久组合研究目录（不上传仓库）
+example/永久组合/
