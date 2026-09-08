@@ -461,6 +461,8 @@ class QMTAPI(BaseAPI):
         self._executors: Dict[str, QMTExecutor] = {}
         self._virtual_books: Dict[str, VirtualBook] = {}
         self._on_trade_filled_callback: Optional[Callable[[str, TradeInfo], None]] = None
+        self._on_disconnect_callback: Optional[Callable[[], None]] = None
+        self._on_reconnect_exhausted_callback: Optional[Callable[[], None]] = None
         # 未匹配回报缓冲：下单成功到 register_order 之间存在毫秒级窗口，
         # 期间到达的委托/成交回报会被当作"外部单"忽略导致簿记漏记。
         # 暂存后由 _replay_deferred 在订单注册时重放，超过 TTL 视为真外部单丢弃。
@@ -483,6 +485,16 @@ class QMTAPI(BaseAPI):
             callback: 回调函数，签名为 callback(instance_id, trade_info)
         """
         self._on_trade_filled_callback = callback
+
+    def set_reconnect_callback(self, on_disconnect=None, on_reconnect_exhausted=None):
+        """注册断线/重连耗尽告警回调
+
+        Args:
+            on_disconnect: 交易通道断开时回调（无参）
+            on_reconnect_exhausted: 重连次数用尽仍未恢复时回调（无参）
+        """
+        self._on_disconnect_callback = on_disconnect
+        self._on_reconnect_exhausted_callback = on_reconnect_exhausted
 
     def _init_api(self):
         """初始化API - 根据 trade_mode 选择初始化方式"""
@@ -510,6 +522,11 @@ class QMTAPI(BaseAPI):
 
                 def on_disconnected(self):
                     self.api.logger.warning("MiniQMT 交易服务器连接断开，将在后台自动重连")
+                    if self.api._on_disconnect_callback:
+                        try:
+                            self.api._on_disconnect_callback()
+                        except Exception as e:  # noqa: BLE001
+                            self.api.logger.error(f'断线告警回调异常: {e}')
                     self.api._schedule_reconnect()
 
                 def on_stock_order(self, order):
@@ -662,6 +679,11 @@ class QMTAPI(BaseAPI):
                 except Exception as e:
                     self.logger.error(f'MiniQMT 重连异常: {e}')
             self.logger.error('MiniQMT 重连次数已用尽，交易通道未恢复，请人工检查 QMT 客户端')
+            if self._on_reconnect_exhausted_callback:
+                try:
+                    self._on_reconnect_exhausted_callback()
+                except Exception as e:  # noqa: BLE001
+                    self.logger.error(f'重连耗尽告警回调异常: {e}')
         finally:
             with self._reconnect_lock:
                 self._reconnecting = False

@@ -1,0 +1,41 @@
+{
+  "channels": {
+    "feishu": {
+      "enabled": false,
+      "webhook_url": "https://open.feishu.cn/open-apis/bot/v2/hook/替换为你的飞书机器人webhook",
+      "secret": ""
+    },
+    "wecom": {
+      "enabled": false,
+      "webhook_url": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=替换为你的企业微信机器人key",
+      "secret": ""
+    }
+  },
+  "monitors": {
+    "reconcile": {
+      "enabled": true,
+      "notify_on_drift": true
+    },
+    "reconnect": {
+      "enabled": true
+    },
+    "volume_surge": {
+      "enabled": true,
+      "base_window": 20,
+      "factor": 3.0
+    },
+    "drawdown_account": {
+      "enabled": true,
+      "threshold": 0.10,
+      "check_interval_sec": 60,
+      "cooldown_sec": 3600,
+      "peak_file": "trading_records/account_equity_peak.json"
+    },
+    "heartbeat_watchdog": {
+      "enabled": true,
+      "timeout_sec": 180,
+      "check_interval_sec": 60
+    }
+  },
+  "cooldown_sec": 300
+}
