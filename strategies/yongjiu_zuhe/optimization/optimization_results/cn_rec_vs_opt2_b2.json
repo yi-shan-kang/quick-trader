@@ -1,0 +1,98 @@
+[
+  {
+    "strategy": "yongjiu_zuhe",
+    "version": "cn_rec",
+    "interval": "month",
+    "start": "2023-06-13",
+    "end": "2026-04-28",
+    "days": 621,
+    "total_return_pct": 37.44,
+    "annual_return_pct": 13.78,
+    "sharpe": 2.38,
+    "max_dd_pct": -3.07
+  },
+  {
+    "strategy": "yongjiu_zuhe",
+    "version": "cn_rec",
+    "interval": "year",
+    "start": "2023-06-13",
+    "end": "2026-04-28",
+    "days": 621,
+    "total_return_pct": 39.02,
+    "annual_return_pct": 14.3,
+    "sharpe": 2.281,
+    "max_dd_pct": -3.17
+  },
+  {
+    "strategy": "yongjiu_zuhe",
+    "version": "opt2",
+    "interval": "month",
+    "start": "2023-06-13",
+    "end": "2026-04-28",
+    "days": 621,
+    "total_return_pct": 33.95,
+    "annual_return_pct": 12.59,
+    "sharpe": 2.034,
+    "max_dd_pct": -2.62
+  },
+  {
+    "strategy": "yongjiu_zuhe",
+    "version": "b2",
+    "interval": "month",
+    "start": "2023-06-13",
+    "end": "2026-04-28",
+    "days": 621,
+    "total_return_pct": 38.68,
+    "annual_return_pct": 14.19,
+    "sharpe": 2.171,
+    "max_dd_pct": -3.47
+  },
+  {
+    "strategy": "yongjiu_zuhe",
+    "version": "opt2",
+    "interval": "month",
+    "start": "2020-04-28",
+    "end": "2026-04-28",
+    "days": 1379,
+    "total_return_pct": 57.76,
+    "annual_return_pct": 8.69,
+    "sharpe": 1.629,
+    "max_dd_pct": -3.7
+  },
+  {
+    "strategy": "yongjiu_zuhe",
+    "version": "b2",
+    "interval": "month",
+    "start": "2020-04-28",
+    "end": "2026-04-28",
+    "days": 1379,
+    "total_return_pct": 51.73,
+    "annual_return_pct": 7.92,
+    "sharpe": 1.355,
+    "max_dd_pct": -9.07
+  },
+  {
+    "strategy": "yongjiu_zuhe",
+    "version": "opt2",
+    "interval": "year",
+    "start": "2020-04-28",
+    "end": "2026-04-28",
+    "days": 1379,
+    "total_return_pct": 60.84,
+    "annual_return_pct": 9.07,
+    "sharpe": 1.605,
+    "max_dd_pct": -3.74
+  },
+  {
+    "strategy": "yongjiu_zuhe",
+    "version": "b2",
+    "interval": "year",
+    "start": "2020-04-28",
+    "end": "2026-04-28",
+    "days": 1379,
+    "total_return_pct": 55.73,
+    "annual_return_pct": 8.43,
+    "sharpe": 1.356,
+    "max_dd_pct": -9.18
+  }
+]

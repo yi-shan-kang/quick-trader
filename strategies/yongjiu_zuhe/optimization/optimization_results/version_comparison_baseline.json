@@ -1,0 +1,58 @@
+[
+  {
+    "version": "base",
+    "name": "基础版（4只经典等权）",
+    "n_symbols": 4,
+    "start": "2020-04-28",
+    "end": "2026-04-28",
+    "trading_days": 1379,
+    "initial_capital": 100000.0,
+    "final_value": 131738.2438,
+    "total_return_pct": 31.7382438,
+    "annual_return_pct": 5.166223977287099,
+    "sharpe_ratio": 1.3023293275992016,
+    "max_drawdown_pct": -5.504646839693047
+  },
+  {
+    "version": "b2",
+    "name": "方案B固收+（含纳指）",
+    "n_symbols": 7,
+    "start": "2020-04-28",
+    "end": "2026-04-28",
+    "trading_days": 1379,
+    "initial_capital": 100000.0,
+    "final_value": 137779.7404,
+    "total_return_pct": 37.77974040000001,
+    "annual_return_pct": 6.031495900823036,
+    "sharpe_ratio": 1.4430792724823027,
+    "max_drawdown_pct": -5.394261076261994
+  },
+  {
+    "version": "opt2",
+    "name": "优化版2（去纳指，拉长回测）",
+    "n_symbols": 7,
+    "start": "2020-04-28",
+    "end": "2026-04-28",
+    "trading_days": 1379,
+    "initial_capital": 100000.0,
+    "final_value": 137779.7404,
+    "total_return_pct": 37.77974040000001,
+    "annual_return_pct": 6.031495900823036,
+    "sharpe_ratio": 1.4430792724823027,
+    "max_drawdown_pct": -5.394261076261994
+  },
+  {
+    "version": "opt4",
+    "name": "优化版4（全A股，更稳健）",
+    "n_symbols": 6,
+    "start": "2020-04-28",
+    "end": "2026-04-28",
+    "trading_days": 1379,
+    "initial_capital": 100000.0,
+    "final_value": 129745.21840000001,
+    "total_return_pct": 29.745218400000013,
+    "annual_return_pct": 4.873664083861184,
+    "sharpe_ratio": 1.2220647276301615,
+    "max_drawdown_pct": -5.750520275908029
+  }
+]

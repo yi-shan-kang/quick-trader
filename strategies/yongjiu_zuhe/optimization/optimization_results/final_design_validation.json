@@ -1,0 +1,80 @@
+[
+  {
+    "version": "cn_rec",
+    "interval": "year",
+    "rule": "threshold",
+    "start": "2023-06-13",
+    "end": "2026-04-28",
+    "days": 621,
+    "total_return_pct": 39.02,
+    "sharpe": 2.281,
+    "max_dd_pct": -3.17,
+    "trade_count": 1,
+    "annual_return_pct": 14.3
+  },
+  {
+    "version": "cn_rec",
+    "interval": "quarter",
+    "rule": "threshold",
+    "start": "2023-06-13",
+    "end": "2026-04-28",
+    "days": 621,
+    "total_return_pct": 37.14,
+    "sharpe": 2.3,
+    "max_dd_pct": -3.16,
+    "trade_count": 1,
+    "annual_return_pct": 13.68
+  },
+  {
+    "version": "cn_rec",
+    "interval": "month",
+    "rule": "threshold",
+    "start": "2023-06-13",
+    "end": "2026-04-28",
+    "days": 621,
+    "total_return_pct": 37.44,
+    "sharpe": 2.38,
+    "max_dd_pct": -3.07,
+    "trade_count": 1,
+    "annual_return_pct": 13.78
+  },
+  {
+    "version": "cn_rec",
+    "interval": "year",
+    "rule": "band25",
+    "start": "2023-06-13",
+    "end": "2026-04-28",
+    "days": 621,
+    "total_return_pct": 36.95,
+    "sharpe": 2.303,
+    "max_dd_pct": -3.17,
+    "trade_count": 3,
+    "annual_return_pct": 13.61
+  },
+  {
+    "version": "cn_rec",
+    "interval": "quarter",
+    "rule": "band25",
+    "start": "2023-06-13",
+    "end": "2026-04-28",
+    "days": 621,
+    "total_return_pct": 36.72,
+    "sharpe": 2.29,
+    "max_dd_pct": -2.97,
+    "trade_count": 9,
+    "annual_return_pct": 13.53
+  },
+  {
+    "version": "cn_rec",
+    "interval": "month",
+    "rule": "band25",
+    "start": "2023-06-13",
+    "end": "2026-04-28",
+    "days": 621,
+    "total_return_pct": 36.28,
+    "sharpe": 2.374,
+    "max_dd_pct": -2.81,
+    "trade_count": 18,
+    "annual_return_pct": 13.38
+  }
+]

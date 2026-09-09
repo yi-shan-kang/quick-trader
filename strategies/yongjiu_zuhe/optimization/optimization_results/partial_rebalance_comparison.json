@@ -1,0 +1,24 @@
+[
+  {
+    "partial": false,
+    "total_return_pct": 37.77974040000001,
+    "annual_return_pct": 6.031495900823036,
+    "sharpe_ratio": 1.4430792724823027,
+    "max_drawdown_pct": -5.394261076261994,
+    "rebalance_triggers_full_mode": 0,
+    "rebalance_triggers_partial_mode": 0,
+    "rebalance_skipped": 0,
+    "trading_days": 1379
+  },
+  {
+    "partial": true,
+    "total_return_pct": 41.12311860000001,
+    "annual_return_pct": 6.497088720854949,
+    "sharpe_ratio": 1.4735109404955586,
+    "max_drawdown_pct": -5.394261076261994,
+    "rebalance_triggers_full_mode": 0,
+    "rebalance_triggers_partial_mode": 0,
+    "rebalance_skipped": 0,
+    "trading_days": 1379
+  }
+]

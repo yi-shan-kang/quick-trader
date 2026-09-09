@@ -1,0 +1,54 @@
+[
+  {
+    "strategy": "yongjiu_zuhe",
+    "version": "base",
+    "interval": "year",
+    "rule": "threshold",
+    "start": "2020-04-28",
+    "end": "2026-04-28",
+    "days": 1379,
+    "total_return_pct": 44.63,
+    "annual_return_pct": 6.98,
+    "sharpe": 1.055,
+    "max_dd_pct": -10.97
+  },
+  {
+    "strategy": "yongjiu_zuhe",
+    "version": "base",
+    "interval": "quarter",
+    "rule": "threshold",
+    "start": "2020-04-28",
+    "end": "2026-04-28",
+    "days": 1379,
+    "total_return_pct": 45.66,
+    "annual_return_pct": 7.12,
+    "sharpe": 1.138,
+    "max_dd_pct": -8.26
+  },
+  {
+    "strategy": "yongjiu_zuhe",
+    "version": "base",
+    "interval": "month",
+    "rule": "band25",
+    "start": "2020-04-28",
+    "end": "2026-04-28",
+    "days": 1379,
+    "total_return_pct": 46.86,
+    "annual_return_pct": 7.28,
+    "sharpe": 1.157,
+    "max_dd_pct": -8.07
+  },
+  {
+    "strategy": "yongjiu_zuhe",
+    "version": "base",
+    "interval": "month",
+    "rule": "threshold",
+    "start": "2020-04-28",
+    "end": "2026-04-28",
+    "days": 1379,
+    "total_return_pct": 45.2,
+    "annual_return_pct": 7.05,
+    "sharpe": 1.136,
+    "max_dd_pct": -8.28
+  }
+]
