@@ -79,6 +79,35 @@ class StrategyInstanceManager:
         self._configs = instances
         self.logger.info(f'加载配置完成: {len(instances)} 个策略实例')
 
+    def _resolve_account_ids(self, instances: List[dict]):
+        """回填 QMT 账号：实例配置内留空，从本地 config/account.local.json 读取
+
+        账号信息隔离：QMT 模拟/正式账号只保存在本地、不入库。
+        account.local.json 已加入 .gitignore。缺失时明确报错，避免空账号静默连错。
+        """
+        missing = [c for c in instances if not c.get('account_id')]
+        if not missing:
+            return
+        local_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            'config', 'account.local.json'
+        )
+        if not os.path.exists(local_path):
+            raise RuntimeError(
+                f'实例配置未填写 account_id 且本地账号文件不存在: {local_path}\n'
+                '请创建 config/account.local.json，格式: {"实例ID": "QMT账号"}'
+            )
+        with open(local_path, encoding='utf-8') as f:
+            mapping = json.load(f)
+        for cfg in missing:
+            acc = mapping.get(cfg['instance_id']) or mapping.get(cfg.get('strategy_name'))
+            if not acc:
+                raise RuntimeError(
+                    f'本地账号文件缺少 {cfg["instance_id"]} 的账号映射，'
+                    f'请补充 config/account.local.json'
+                )
+            cfg['account_id'] = str(acc)
+
     def start_all(self):
         """启动所有策略实例
 
@@ -91,6 +120,8 @@ class StrategyInstanceManager:
         6. 创建策略实例
         7. 启动策略运行
         """
+        # 回填本地隔离的 QMT 账号（account.local.json，不入库）
+        self._resolve_account_ids(self._configs)
         account_groups = self._group_by_account()
 
         for account_key, instances in account_groups.items():
@@ -121,6 +152,10 @@ class StrategyInstanceManager:
                 instance_id = config['instance_id']
                 initial_capital = config.get('initial_capital', 0)
                 cash_ratio = config.get('cash_ratio', 1.0)
+                # 认领白名单：只认领本策略池内的持仓（如 ETF 池），
+                # 多策略共享账户时避免把其他策略的标的（如可转债）计入本策略簿记
+                claim_symbols = config.get('claim_symbols')
+                allowed = set(claim_symbols) if claim_symbols else None
 
                 book = VirtualBook(
                     strategy_id=instance_id,
@@ -142,12 +177,21 @@ class StrategyInstanceManager:
                     # 已从持久化恢复簿记，不覆盖持仓和现金，
                     # 只登记已认领标的防止其他策略重复认领
                     if config.get('claim_existing_positions', True):
+                        if allowed is not None:
+                            # 历史状态可能含此前全量认领的其他策略标的，按白名单清理
+                            removed = book.prune_positions(allowed)
+                            if removed:
+                                self.logger.info(
+                                    f'[{instance_id}] 持久化恢复后按白名单剔除 '
+                                    f'{len(removed)} 个持仓: {sorted(removed)}'
+                                )
                         claimed_symbols.update(book._positions.keys())
                     self.logger.info(f'[{instance_id}] 已从持久化恢复，跳过账户初始化')
                 elif config.get('claim_existing_positions', True):
                     book.initialize_from_account(
                         actual_positions, actual_cash, claimed_symbols,
-                        cash_ratio=cash_ratio
+                        cash_ratio=cash_ratio,
+                        allowed_symbols=allowed
                     )
                     claimed_symbols.update(book._positions.keys())
                 else:

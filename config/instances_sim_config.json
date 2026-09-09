@@ -1,0 +1,18 @@
+{
+  "instances": [
+    {
+      "instance_id": "qixing_gaozhao_sim",
+      "strategy_name": "qixing_gaozhao",
+      "mode": "sim",
+      "account_id": "",
+      "qmt_path": "D:\\国金QMT交易端模拟New\\userdata_mini",
+      "initial_capital": 1000,
+      "cash_ratio": 1.0,
+      "claim_existing_positions": false,
+      "kwargs": {
+        "execute_time": "14:00",
+        "startup_execute": true
+      }
+    }
+  ]
+}

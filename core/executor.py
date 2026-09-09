@@ -2,11 +2,18 @@ from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Any, TYPE_CHECKING
 import logging
 import math
+import time
 
 if TYPE_CHECKING:
     from core.virtual_book import VirtualBook
     from core.order_router import OrderRouter
     from core.data_adapter import MarketDataAdapter
+
+try:
+    from monitor.alerter import get_alerter
+    HAS_ALERTER = True
+except Exception:  # noqa: BLE001 告警模块缺失不影响交易
+    HAS_ALERTER = False
 
 
 class StrategyExecutor(ABC):
@@ -183,7 +190,23 @@ class QMTExecutor(StrategyExecutor):
         self._data_adapter = data_adapter
         self._order_router: Optional['OrderRouter'] = None
         self._replay_callback = None  # 订单注册后重放暂存回报的钩子，由 QMTAPI 设置
+        self._alerter = get_alerter() if HAS_ALERTER else None
         self.logger = logging.getLogger(self.__class__.__module__ + '.' + self.__class__.__name__)
+
+    def _notify(self, title: str, symbol: str, price: float, volume: int, reason: str = ''):
+        """交易事件推送（企业微信/飞书），每笔唯一 key 避免被冷却去抖吞掉"""
+        if not self._alerter:
+            return
+        instance = self.virtual_book.strategy_id if self.virtual_book else ''
+        msg = (
+            f'策略: {instance}\n'
+            f'标的: {symbol}\n'
+            f'价格: {price:.3f}  数量: {volume}\n'
+            f'金额: {price * volume:.2f}'
+        )
+        if reason:
+            msg += f'\n原因: {reason}'
+        self._alerter.send(title, msg, dedup_key=f'trade:{symbol}:{int(time.time() * 1000)}')
 
     def set_order_router(self, order_router: 'OrderRouter'):
         """设置订单路由器"""
@@ -198,9 +221,11 @@ class QMTExecutor(StrategyExecutor):
         if self._data_adapter:
             if self._data_adapter.is_suspended(symbol):
                 self.logger.warning(f'买入拒绝-停牌: {symbol}')
+                self._notify('买入被拒-停牌', symbol, price, volume)
                 return None
             if self._data_adapter.is_limit_up(symbol):
                 self.logger.warning(f'买入拒绝-涨停: {symbol}')
+                self._notify('买入被拒-涨停', symbol, price, volume)
                 return None
 
         # VirtualBook 交易前校验：检查可用现金
@@ -217,12 +242,17 @@ class QMTExecutor(StrategyExecutor):
                     f'买入拒绝-虚拟簿记资金不足: {symbol}, '
                     f'需={estimated_cost:.2f}, 可用={available_cash:.2f}'
                 )
+                self._notify(
+                    '买入被拒-资金不足', symbol, price, volume,
+                    reason=f'需={estimated_cost:.2f}, 可用={available_cash:.2f}'
+                )
                 return None
 
         strategy_name = self.virtual_book.strategy_id if self.virtual_book else ''
         result = self.qmt_api.buy(symbol, price, volume, strategy_name=strategy_name)
         if result is None:
             self.logger.error(f'买入失败: {symbol}, 价格: {price}, 数量: {volume}')
+            self._notify('买入下单失败', symbol, price, volume)
         else:
             order_id = str(result)
             if self.virtual_book:
@@ -239,9 +269,11 @@ class QMTExecutor(StrategyExecutor):
         if self._data_adapter:
             if self._data_adapter.is_suspended(symbol):
                 self.logger.warning(f'卖出拒绝-停牌: {symbol}')
+                self._notify('卖出被拒-停牌', symbol, price, volume)
                 return None
             if self._data_adapter.is_limit_down(symbol):
                 self.logger.warning(f'卖出拒绝-跌停: {symbol}')
+                self._notify('卖出被拒-跌停', symbol, price, volume)
                 return None
 
         # VirtualBook 交易前校验：检查可用持仓
@@ -256,12 +288,17 @@ class QMTExecutor(StrategyExecutor):
                     f'卖出拒绝-虚拟簿记持仓不足: {symbol}, '
                     f'需={volume}, 可用={available_vol}'
                 )
+                self._notify(
+                    '卖出被拒-持仓不足', symbol, price, volume,
+                    reason=f'需={volume}, 可用={available_vol}'
+                )
                 return None
 
         strategy_name = self.virtual_book.strategy_id if self.virtual_book else ''
         result = self.qmt_api.sell(symbol, price, volume, strategy_name=strategy_name)
         if result is None:
             self.logger.error(f'卖出失败: {symbol}, 价格: {price}, 数量: {volume}')
+            self._notify('卖出下单失败', symbol, price, volume)
         else:
             order_id = str(result)
             if self.virtual_book:

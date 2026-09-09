@@ -31,7 +31,7 @@ from .config import ETF_POOL, QDII_ETFS, DEFENSIVE_ETF
 
 
 @register_strategy('qixing_gaozhao',
-                   backtest_config={'cash': 100000, 'commission': 0.0002,
+                   backtest_config={'cash': 1000, 'commission': 0.0002,
                                     'open_commission': 0.0002,
                                     'close_commission': 0.0002,
                                     'close_tax': 0.0,
@@ -47,7 +47,7 @@ class QixingGaozhaoStrategy(StrategyLogic):
     """
 
     params = (
-        ('holdings_num', 5),             # 持仓ETF数量（优化版：1→5）
+        ('holdings_num', 1),             # 持仓ETF数量
         ('lookback_days', 60),           # 动量计算周期（优化版：24→60）
         ('defensive_etf', DEFENSIVE_ETF),  # 防御性ETF（货币ETF）
         # 流动性过滤
@@ -69,6 +69,12 @@ class QixingGaozhaoStrategy(StrategyLogic):
         ('max_score_threshold', 5.0),
         # 调仓容差
         ('rebalance_threshold', 0.05),   # 偏离目标仓位5%以内不调仓
+        # 资金/卖出控制（实盘安全用）
+        ('max_trade_amount', None),      # 单次调仓买入金额上限（元）；None=不限制（回测默认）
+        ('sell_enabled', True),          # 是否允许卖出（仓/止损）。False=只买不卖（实盘保守）
+        # 执行调度
+        ('execute_time', None),          # 每日调仓执行时间（HH:MM，如 '14:00'）；None=每个 on_bar 都执行（回测默认）
+        ('startup_execute', True),       # 启动后立即执行一次（建仓/对账），之后按 execute_time 调度
     )
 
     def __init__(self, executor=None, **kwargs):
@@ -79,6 +85,10 @@ class QixingGaozhaoStrategy(StrategyLogic):
         # 持仓成本跟踪（用于止损）
         self._cost_price = {}
         self._cost_size = {}
+        # 执行调度状态（不持久化：每次启动都触发一次初始执行）
+        self._startup_done = False
+        self._last_execute_date = None
+        self._execute_window_minutes = 2  # 14:00~14:01（含 2 分钟窗口）
         # ETF设为T+0
         for symbol in self.etf_pool + [self.params.defensive_etf]:
             self.set_t_plus_1(symbol, False)
@@ -96,6 +106,10 @@ class QixingGaozhaoStrategy(StrategyLogic):
             return
         date_str = current_date.strftime('%Y-%m-%d') if hasattr(current_date, 'strftime') else str(current_date)
 
+        # 执行调度：启动首轮/每日时间窗判定（execute_time=None 时每个 on_bar 都执行）
+        if not self._should_execute(bar, date_str):
+            return
+
         # 1. 止损检查（每日开盘，近似原版盘中止损）
         self._check_stop_loss(date_str)
 
@@ -105,10 +119,71 @@ class QixingGaozhaoStrategy(StrategyLogic):
         self._rebalance(ranked, date_str)
 
     # ================================================================
+    # 执行调度
+    # ================================================================
+
+    def _should_execute(self, bar: BarData, date_str: str) -> bool:
+        """判断本次 on_bar 是否应执行止损/调仓。
+
+        - execute_time=None：每个 on_bar 都执行（回测默认，保持原逻辑）
+        - 否则：启动后立即执行一次（建仓/对账），
+          之后仅每日 execute_time 起的 _execute_window_minutes 窗口内执行，
+          且同一交易日只执行一次（_last_execute_date 去重）。
+        """
+        if self.params.execute_time is None:
+            return True
+
+        # 启动后立即执行一次（每次重启都会触发，状态不持久化）
+        if self.params.startup_execute and not self._startup_done:
+            self._startup_done = True
+            self._last_execute_date = date_str
+            self.log(f'[{date_str}] 启动首轮执行（后续每日 {self.params.execute_time} 调仓）', level='info')
+            return True
+
+        # 同一交易日已执行过则不重复执行
+        if date_str == self._last_execute_date:
+            return False
+
+        # 判断当前时间是否落入每日执行时间窗口
+        current_time = self._current_time_str(bar)
+        if not current_time:
+            return False
+        window_end = self._time_plus_minutes(self.params.execute_time, self._execute_window_minutes)
+        if self.params.execute_time <= current_time < window_end:
+            self._last_execute_date = date_str
+            self.log(f'[{date_str}] 定时窗口内执行调仓（{current_time}）', level='info')
+            return True
+        return False
+
+    @staticmethod
+    def _time_plus_minutes(hhmm: str, minutes: int) -> str:
+        """'14:00' + 2 -> '14:02'（HH:MM 字符串算术，便于区间比较）"""
+        try:
+            h, m = int(hhmm.split(':')[0]), int(hhmm.split(':')[1])
+            total = h * 60 + m + minutes
+            return f'{total // 60 % 24:02d}:{total % 60:02d}'
+        except (ValueError, IndexError):
+            return '23:59'
+
+    @staticmethod
+    def _current_time_str(bar: BarData):
+        """取 bar 推送时刻的 HH:MM（无时间部分时返回 None）"""
+        dt = bar.datetime
+        if dt is None or not hasattr(dt, 'strftime'):
+            return None
+        try:
+            return dt.strftime('%H:%M')
+        except Exception:
+            return None
+
+    # ================================================================
     # 止损
     # ================================================================
 
     def _check_stop_loss(self, date_str: str):
+        # 只买不卖模式下不做任何卖出（包括止损）
+        if not self.params.sell_enabled:
+            return
         for symbol in list(self._cost_price.keys()):
             pos_size = self.get_position_size(symbol)
             if pos_size <= 0:
@@ -236,7 +311,7 @@ class QixingGaozhaoStrategy(StrategyLogic):
     # ================================================================
 
     def _rebalance(self, ranked, date_str: str):
-        """卖出非目标持仓，等权买入目标持仓"""
+        """卖出非目标持仓（可禁用），等权买入目标持仓（可限金额）"""
         # 目标列表：前N只合格ETF + 防御ETF补位
         target = []
         for m in ranked[:self.params.holdings_num]:
@@ -249,55 +324,78 @@ class QixingGaozhaoStrategy(StrategyLogic):
         target = list(dict.fromkeys(target))
         target_set = set(target)
 
-        # 卖出不在目标中的持仓
-        for symbol in self.get_symbols():
-            pos_size = self.get_position_size(symbol)
-            if pos_size > 0 and symbol not in target_set:
-                sellable = self.get_sellable_volume(symbol)
-                if sellable <= 0:
-                    continue
-                price = self.get_current_price(symbol)
-                if price is None or price <= 0:
-                    continue
-                self.sell(symbol, price, sellable)
-                name = self.etf_names.get(symbol, symbol)
-                self.log(f'[{date_str}] 卖出非目标: {name} ({symbol}) {sellable}股@{price:.3f}')
+        # 卖出不在目标中的持仓（仅允许卖出时）
+        if self.params.sell_enabled:
+            for symbol in self.get_symbols():
+                pos_size = self.get_position_size(symbol)
+                if pos_size > 0 and symbol not in target_set:
+                    sellable = self.get_sellable_volume(symbol)
+                    if sellable <= 0:
+                        continue
+                    price = self.get_current_price(symbol)
+                    if price is None or price <= 0:
+                        continue
+                    self.sell(symbol, price, sellable)
+                    name = self.etf_names.get(symbol, symbol)
+                    self.log(f'[{date_str}] 卖出非目标: {name} ({symbol}) {sellable}股@{price:.3f}')
 
         # 等权调仓
         total_value = self._get_total_value()
         if total_value <= 0:
             return
         per_target = total_value / len(target)
+        self.log(
+            f'[_rebalance] total_value={total_value:.2f} '
+            f'per_target={per_target:.2f} target={target}',
+            level='debug'
+        )
+
+        # 本次调仓买入预算（max_trade_amount=None 时不限制）
+        buy_budget = self.params.max_trade_amount
 
         for symbol in target:
             price = self.get_current_price(symbol)
             if price is None or price <= 0:
+                self.log(f'[_rebalance] {symbol} 无有效价格, skip', level='debug')
                 continue
             current_value = self.get_position_size(symbol) * price
             diff = per_target - current_value
+            self.log(
+                f'[_rebalance] {symbol} price={price:.4f} '
+                f'cur={current_value:.2f} diff={diff:.2f} budget={buy_budget}',
+                level='debug'
+            )
 
             # 容差内不调仓
             if per_target > 0 and abs(diff) / per_target <= self.params.rebalance_threshold:
                 continue
 
             if diff > 0:
-                self._buy_amount(symbol, price, diff)
-            else:
+                amount = diff
+                if buy_budget is not None:
+                    amount = min(amount, buy_budget)
+                if amount <= 0:
+                    continue
+                spent = self._buy_amount(symbol, price, amount)
+                if buy_budget is not None and spent is not None:
+                    buy_budget -= spent
+            elif self.params.sell_enabled:
                 self._sell_amount(symbol, price, -diff)
 
     def _buy_amount(self, symbol, price, amount):
-        """按金额买入（100股整数倍，现金约束）"""
+        """按金额买入（100股整数倍，现金约束），返回实际成交金额"""
         volume = int(amount / price / 100) * 100
         if volume <= 0:
-            return
+            return 0
         cash = self.get_cash()
         if volume * price > cash:
             volume = int(cash * 0.999 / price / 100) * 100
             if volume <= 0:
-                return
+                return 0
         self.buy(symbol, price, volume)
         name = self.etf_names.get(symbol, symbol)
         self.log(f'买入: {name} ({symbol}) {volume}股@{price:.3f}')
+        return volume * price
 
     def _sell_amount(self, symbol, price, amount):
         """按金额卖出（100股整数倍，不超过可卖量）"""

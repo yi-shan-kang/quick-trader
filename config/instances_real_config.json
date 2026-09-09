@@ -1,0 +1,34 @@
+{
+  "instances": [
+    {
+      "instance_id": "qixing_gaozhao_real",
+      "strategy_name": "qixing_gaozhao",
+      "mode": "real",
+      "account_id": "",
+      "qmt_path": "D:\\国金证券QMT正式版\\userdata_mini",
+      "trade_mode": "miniqmt",
+      "claim_existing_positions": true,
+      "claim_symbols": [
+        "159941.SZ", "159509.SZ", "513500.SH", "513520.SH",
+        "513030.SH", "513080.SH", "518880.SH", "159980.SZ",
+        "161226.SZ", "159985.SZ", "159981.SZ", "501018.SH",
+        "511090.SH", "513130.SH", "520500.SH", "513970.SH",
+        "513690.SH", "159915.SZ", "563300.SH", "563360.SH",
+        "510410.SH", "515210.SH", "562800.SH", "159928.SZ",
+        "512690.SH", "159992.SZ", "588220.SH", "159819.SZ",
+        "159851.SZ", "159326.SZ", "515030.SH", "516160.SH",
+        "512710.SH", "515220.SH", "512880.SH", "516510.SH",
+        "515050.SH", "512170.SH", "159870.SZ", "159611.SZ",
+        "159995.SZ", "515790.SH", "159755.SZ", "515000.SH",
+        "562500.SH", "511880.SH"
+      ],
+      "kwargs": {
+        "execute_time": "14:00",
+        "startup_execute": true,
+        "max_trade_amount": 1000,
+        "sell_enabled": false,
+        "holdings_num": 1
+      }
+    }
+  ]
+}

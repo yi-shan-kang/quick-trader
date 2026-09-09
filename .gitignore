@@ -45,6 +45,9 @@ backtest_results
 config/alert_config.local.json
 config/alert_config.json
 
+# QMT 账号映射：账号信息隔离，只存本地、不入库
+config/account.local.json
+
 /strategies_tmp/
 /strategies_my/
 

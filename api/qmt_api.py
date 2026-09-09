@@ -463,6 +463,7 @@ class QMTAPI(BaseAPI):
         self._on_trade_filled_callback: Optional[Callable[[str, TradeInfo], None]] = None
         self._on_disconnect_callback: Optional[Callable[[], None]] = None
         self._on_reconnect_exhausted_callback: Optional[Callable[[], None]] = None
+        self._alerter = get_alerter() if HAS_ALERTER else None
         # 未匹配回报缓冲：下单成功到 register_order 之间存在毫秒级窗口，
         # 期间到达的委托/成交回报会被当作"外部单"忽略导致簿记漏记。
         # 暂存后由 _replay_deferred 在订单注册时重放，超过 TTL 视为真外部单丢弃。
@@ -754,6 +755,7 @@ class QMTAPI(BaseAPI):
             if not order_info.is_active:
                 self.trader.remove_pending_order(order_id)
             if self.order_router.has_order(order_id):
+                instance_id = self.order_router.get_instance_id(order_id)  # 提前取，cleanup 后映射即删除
                 self.order_router.route_order(order_id, order_info)
                 if not order_info.is_active:
                     self.order_router.cleanup_order(order_id)
@@ -761,12 +763,17 @@ class QMTAPI(BaseAPI):
                     # 否则买入废单后资金被永久冻结
                     for book in self._virtual_books.values():
                         book.on_order_completed(order_id)
+                    # 委托终态失败推送（成交由 _on_qmt_trade 通知）
+                    self._notify_order_terminal(order_info, instance_id)
             elif self._strategies:
                 # 多策略模式：未匹配的委托可能是"下单后注册前"到达的自家单，
                 # 暂存等待 _replay_deferred 重放；超过 TTL 视为外部单丢弃
                 self._defer_order(order_id, qmt_order)
             elif self.strategy:
                 self.strategy.on_order(order_info)
+                # 单策略模式：委托终态失败同样推送
+                if not order_info.is_active:
+                    self._notify_order_terminal(order_info, '')
         except Exception as e:
             self.logger.error(f'桥接委托回调失败: {e}')
 
@@ -828,6 +835,8 @@ class QMTAPI(BaseAPI):
                             self._on_trade_filled_callback(instance_id, trade_info)
                         except Exception as cb_e:
                             self.logger.error(f'成交保存回调异常: {cb_e}')
+                    # 成交推送（企业微信/飞书）——交易成功通知
+                    self._notify_trade(trade_info, instance_id)
             elif self._strategies:
                 # 多策略模式：未匹配的成交可能是"下单后注册前"到达的自家单，
                 # 暂存等待 _replay_deferred 重放；超过 TTL 视为外部单丢弃
@@ -836,6 +845,47 @@ class QMTAPI(BaseAPI):
                 self.strategy.on_trade(trade_info)
         except Exception as e:
             self.logger.error(f'桥接成交回调失败: {e}')
+
+    # ---- 交易事件推送（企业微信/飞书） ----
+
+    def _notify_trade(self, trade_info: TradeInfo, instance_id: str):
+        """成交成功通知：买入成交/卖出成交"""
+        if not self._alerter:
+            return
+        action = '买入成交' if trade_info.is_buy else '卖出成交'
+        amount = trade_info.price * trade_info.volume
+        msg = (
+            f'策略: {instance_id}\n'
+            f'标的: {trade_info.symbol}\n'
+            f'价格: {trade_info.price:.3f}  数量: {trade_info.volume}\n'
+            f'金额: {amount:.2f}  佣金: {trade_info.commission:.2f}'
+        )
+        # 每笔唯一 key，避免同批次多笔成交被冷却去抖吞掉
+        self._alerter.send(
+            action, msg,
+            dedup_key=f'fill:{trade_info.order_id or trade_info.symbol}:{int(time.time() * 1000)}'
+        )
+
+    def _notify_order_terminal(self, order_info: OrderInfo, instance_id: str):
+        """委托终态失败通知：废单/拒单/撤单（全部成交由 _notify_trade 通知，避免重复）"""
+        if not self._alerter:
+            return
+        if order_info.status == OrderInfo.STATUS_REJECTED:
+            title = '委托失败-废单/拒单'
+        elif order_info.status == OrderInfo.STATUS_CANCELED:
+            title = '委托撤销'
+        else:
+            return
+        action = '买入' if order_info.is_buy else '卖出'
+        msg = (
+            f'策略: {instance_id}\n'
+            f'{action} {order_info.symbol} {order_info.volume}股@{order_info.price:.3f}\n'
+            f'已成交: {order_info.executed_volume}股'
+        )
+        self._alerter.send(
+            title, msg,
+            dedup_key=f'order:{order_info.order_id}:{order_info.status}'
+        )
 
     def _on_order_retry(self, new_order_id: str, symbol: str, direction, volume: int, price: float, strategy_name: str):
         """撤单重下回调 - 将新订单注册到 order_router 和 VirtualBook

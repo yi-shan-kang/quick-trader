@@ -158,7 +158,8 @@ class VirtualBook:
         account_positions: Dict[str, int],
         account_cash: float,
         claimed_symbols: set,
-        cash_ratio: float = 1.0
+        cash_ratio: float = 1.0,
+        allowed_symbols: Optional[set] = None
     ):
         """从账户实际状态初始化虚拟持仓
 
@@ -167,10 +168,18 @@ class VirtualBook:
             account_cash: 账户实际现金
             claimed_symbols: 已被其他策略认领的标的集合
             cash_ratio: 现金分配比例 (0.0~1.0)，用于多策略共享账户
+            allowed_symbols: 允许认领的标的白名单（None=认领全部未占用持仓）。
+                多策略共享账户时用于只认领本策略池内的标的，
+                避免把其他策略的持仓（如可转债）计入本策略簿记与总资产。
         """
+        skipped = []
         for symbol, volume in account_positions.items():
-            if symbol not in claimed_symbols and volume > 0:
-                self._positions[symbol] = volume
+            if symbol in claimed_symbols or volume <= 0:
+                continue
+            if allowed_symbols is not None and symbol not in allowed_symbols:
+                skipped.append(symbol)
+                continue
+            self._positions[symbol] = volume
 
         if self.initial_capital > 0:
             self._cash = min(self.initial_capital, account_cash)
@@ -184,7 +193,30 @@ class VirtualBook:
             f'[{self.strategy_id}] 初始化完成: '
             f'持仓={len(self._positions)}只, 现金={self._cash:.2f}'
             f' (cash_ratio={cash_ratio:.0%})'
+            + (f', 白名单外跳过 {len(skipped)} 只: {sorted(skipped)[:10]}' if skipped else '')
         )
+
+    def prune_positions(self, allowed_symbols: set) -> List[str]:
+        """剔除白名单外的持仓（多策略共享账户时保持簿记只含本策略标的）
+
+        用于持久化恢复场景：旧状态可能包含此前全量认领的标的
+        （如其他策略的可转债），重启后按白名单清理，避免计入
+        本策略的持仓与总资产。
+
+        Args:
+            allowed_symbols: 允许保留的标的集合
+
+        Returns:
+            被剔除的标的代码列表
+        """
+        removed = [s for s in list(self._positions.keys()) if s not in allowed_symbols]
+        for s in removed:
+            self._positions.pop(s, None)
+        if removed:
+            self.logger.info(
+                f'[{self.strategy_id}] 白名单剔除 {len(removed)} 个持仓: {sorted(removed)}'
+            )
+        return removed
 
     def sync_with_account(
         self,
